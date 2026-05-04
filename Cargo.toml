@@ -1,0 +1,23 @@
+[package]
+name = "ferryllm"
+version = "0.1.0"
+edition = "2021"
+description = "A universal LLM protocol middleware — ferry your requests between OpenAI, Anthropic, and beyond."
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["macros"] }
+reqwest = { version = "0.12", features = ["json", "stream", "rustls-tls"], default-features = false }
+tokio-stream = "0.1"
+futures = "0.3"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+async-trait = "0.1"
+thiserror = "2"
+toml = "0.9"
+
+[features]
+default = ["http"]
+http = []

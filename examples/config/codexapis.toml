@@ -1,0 +1,38 @@
+[server]
+listen = "0.0.0.0:3000"
+request_timeout_secs = 120
+body_limit_mb = 32
+
+[logging]
+level = "info"
+format = "text"
+
+[[providers]]
+name = "codexapis"
+type = "openai"
+base_url = "https://codexapis.com"
+api_key_env = "CODX_API_KEY"
+
+[[routes]]
+match = "cc-gpt55"
+match_type = "exact"
+provider = "codexapis"
+rewrite_model = "gpt-5.5"
+
+[[routes]]
+match = "claude-"
+provider = "codexapis"
+rewrite_model = "gpt-5.5"
+
+[[routes]]
+match = "gpt-"
+provider = "codexapis"
+
+[[routes]]
+match = "grok-"
+provider = "codexapis"
+
+[[routes]]
+match = "*"
+provider = "codexapis"
+rewrite_model = "gpt-5.5"
