@@ -727,14 +727,36 @@ fn parse_openai_sse_line_events(
                 }
             }
 
-            if matches!(finish_reason, Some(FinishReason::ToolCalls)) {
-                for tool_index in tool_state.started.keys().copied().collect::<Vec<_>>() {
-                    events.push(StreamEvent::ContentBlockStop { index: tool_index });
+            if let Some(reason) = &finish_reason {
+                match reason {
+                    FinishReason::ToolCalls => {
+                        for tool_index in tool_state.started.keys().copied().collect::<Vec<_>>() {
+                            events.push(StreamEvent::ContentBlockStop { index: tool_index });
+                        }
+                        events.push(StreamEvent::MessageDelta {
+                            stop_reason: Some("tool_use".into()),
+                            usage: None,
+                        });
+                    }
+                    FinishReason::Stop | FinishReason::Length => {
+                        // Text block: emit ContentBlockStop for the current block.
+                        events.push(StreamEvent::ContentBlockStop { index });
+                        events.push(StreamEvent::MessageDelta {
+                            stop_reason: Some("end_turn".into()),
+                            usage: chunk.usage.map(|u| Usage {
+                                prompt_tokens: u.prompt_tokens,
+                                completion_tokens: u.completion_tokens,
+                                total_tokens: u.total_tokens,
+                            }),
+                        });
+                    }
+                    FinishReason::ContentFilter => {
+                        events.push(StreamEvent::Error {
+                            code: "content_filter".into(),
+                            message: "content filter triggered".into(),
+                        });
+                    }
                 }
-                events.push(StreamEvent::MessageDelta {
-                    stop_reason: Some("tool_use".into()),
-                    usage: None,
-                });
             }
 
             if !events.is_empty() {

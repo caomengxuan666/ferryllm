@@ -463,21 +463,105 @@ async fn handle_anthropic_stream(
 ) -> Result<axum::response::Response, AppError> {
     let backend_stream = with_timeout(state, adapter.chat_stream(&ir_req)).await?;
 
-    let sse_stream = backend_stream.filter_map(|result| async move {
-        match result {
-            Ok(stream_event) => {
-                let sse = anthropic::ir_to_anthropic_sse(stream_event);
-                sse.map(|(event_type, data)| {
-                    Ok::<_, Infallible>(Event::default().event(event_type).data(data))
-                })
-            }
-            Err(e) => Some(Ok(
-                Event::default().data(format!("{{\"error\": \"{}\"}}", e))
-            )),
-        }
+    let message_id = format!("msg_{}", uuid_v4());
+
+    // Prepend MessageStart, then lift adapter stream items into the same
+    // event type so they can be chained.
+    enum Control {
+        Injected(ir::StreamEvent),
+        Adapter(Result<ir::StreamEvent, AdapterError>),
+    }
+
+    let prepend = futures::stream::once(async move {
+        Control::Injected(ir::StreamEvent::MessageStart { message_id })
     });
 
-    Ok(Sse::new(sse_stream)
+    let adapter_stream = backend_stream.map(Control::Adapter);
+
+    let combined = prepend.chain(adapter_stream);
+
+    // State carried across stream items.
+    use futures::StreamExt;
+    use std::collections::HashSet;
+    use std::sync::atomic::AtomicBool;
+    let mut started_text_blocks: HashSet<u32> = HashSet::new();
+    let closing_sent = Arc::new(AtomicBool::new(false));
+
+    let closing_flag = Arc::clone(&closing_sent);
+    let sse_stream = combined
+        .map(move |control| {
+            let mut pending: Vec<ir::StreamEvent> = Vec::new();
+
+            let event = match control {
+                Control::Injected(e) => e,
+                Control::Adapter(Ok(e)) => e,
+                Control::Adapter(Err(e)) => {
+                    pending.push(ir::StreamEvent::Error {
+                        code: "stream_error".into(),
+                        message: e.to_string(),
+                    });
+                    return pending
+                        .into_iter()
+                        .filter_map(|e| {
+                            let sse = anthropic::ir_to_anthropic_sse(e);
+                            sse.map(|(event_type, data)| {
+                                Ok::<_, Infallible>(Event::default().event(event_type).data(data))
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                }
+            };
+
+            // Inject ContentBlockStart before first text delta.
+            if let ir::StreamEvent::ContentBlockDelta {
+                index,
+                delta: ir::ContentDelta::TextDelta { .. },
+            } = &event
+            {
+                if !started_text_blocks.contains(index) {
+                    started_text_blocks.insert(*index);
+                    pending.push(ir::StreamEvent::ContentBlockStart {
+                        index: *index,
+                        content_block: ir::ContentBlock::Text {
+                            text: String::new(),
+                        },
+                    });
+                }
+            }
+
+            if let ir::StreamEvent::MessageDelta { .. } | ir::StreamEvent::MessageStop = &event {
+                closing_flag.store(true, Ordering::Relaxed);
+            }
+            pending.push(event);
+
+            pending
+                .into_iter()
+                .filter_map(|e| {
+                    let sse = anthropic::ir_to_anthropic_sse(e);
+                    sse.map(|(event_type, data)| {
+                        Ok::<_, Infallible>(Event::default().event(event_type).data(data))
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        // .map returns a stream of Vec<Result<Event, Infallible>>.
+        // flat_map with stream::iter flattens each vec into individual items.
+        .flat_map(|events: Vec<Result<Event, Infallible>>| futures::stream::iter(events));
+
+    // Append MessageStop if the adapter stream ended without one.
+    let tail = futures::stream::once(async move {
+        if !closing_sent.load(Ordering::Relaxed) {
+            let sse = anthropic::ir_to_anthropic_sse(ir::StreamEvent::MessageStop);
+            sse.map(|(event_type, data)| {
+                Ok::<_, Infallible>(Event::default().event(event_type).data(data))
+            })
+        } else {
+            None
+        }
+    })
+    .filter_map(futures::future::ready);
+
+    Ok(Sse::new(sse_stream.chain(tail))
         .keep_alive(axum::response::sse::KeepAlive::default())
         .into_response())
 }
