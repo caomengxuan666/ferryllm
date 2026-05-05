@@ -41,6 +41,12 @@ body_limit_mb = 32
 level = "info"
 format = "text"
 
+[auth]
+enabled = false
+
+[metrics]
+enabled = true
+
 [[providers]]
 name = "codexapis"
 type = "openai"
@@ -228,7 +234,34 @@ enabled = true
 api_keys_env = "FERRYLLM_API_KEYS"
 ```
 
-`FERRYLLM_API_KEYS` can contain comma-separated keys or point to a key file in a later version.
+`FERRYLLM_API_KEYS` contains comma-separated keys:
+
+```bash
+export FERRYLLM_API_KEYS="key-one,key-two"
+```
+
+Clients can authenticate with either header:
+
+```text
+Authorization: Bearer key-one
+x-api-key: key-one
+```
+
+## Metrics
+
+```toml
+[metrics]
+enabled = true
+```
+
+When enabled, ferryllm exposes Prometheus-style counters at `/metrics`:
+
+```text
+ferryllm_requests_total
+ferryllm_requests_ok_total
+ferryllm_requests_error_total
+ferryllm_upstream_errors_total
+```
 
 ## Validation Rules
 

@@ -25,6 +25,7 @@ The library already includes:
 - Prefix-based model routing and model rewriting.
 - Axum HTTP server with OpenAI and Anthropic entry points.
 - Configurable tracing logs through `RUST_LOG` in the examples.
+- Config-driven server options for body limits, request timeout, API-key auth, and metrics.
 
 A production-grade standalone binary and config-file driven server are planned. See `docs/server-plan.md`.
 

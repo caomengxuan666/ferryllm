@@ -8,7 +8,7 @@ use std::sync::Arc;
 
 use ferryllm::adapters::openai::OpenaiAdapter;
 use ferryllm::router::Router;
-use ferryllm::server::{AppState, build_router};
+use ferryllm::server::{AppState, Metrics, ServerOptions, build_router};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -41,7 +41,11 @@ async fn main() {
     router.add_route("", "openai");
     router.add_rewrite("", "gpt-5.5");
 
-    let state = Arc::new(AppState { router });
+    let state = Arc::new(AppState {
+        router,
+        options: ServerOptions::default(),
+        metrics: Metrics::default(),
+    });
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 

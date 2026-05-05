@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use ferryllm::config::Config;
-use ferryllm::server::{build_router, AppState};
+use ferryllm::server::{build_router, AppState, Metrics};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -27,7 +27,12 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             let listen: SocketAddr = config.server.listen.parse()?;
             let router = config.build_router()?;
-            let state = Arc::new(AppState { router });
+            let options = config.runtime_options()?;
+            let state = Arc::new(AppState {
+                router,
+                options,
+                metrics: Metrics::default(),
+            });
             let app = build_router(state);
             let listener = tokio::net::TcpListener::bind(listen).await?;
 

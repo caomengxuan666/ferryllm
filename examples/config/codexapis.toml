@@ -7,6 +7,13 @@ body_limit_mb = 32
 level = "info"
 format = "text"
 
+[auth]
+enabled = false
+# api_keys_env = "FERRYLLM_API_KEYS"
+
+[metrics]
+enabled = true
+
 [[providers]]
 name = "codexapis"
 type = "openai"

@@ -16,6 +16,10 @@ pub struct Config {
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
+    pub auth: AuthConfig,
+    #[serde(default)]
+    pub metrics: MetricsConfig,
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
@@ -37,6 +41,37 @@ impl Default for ServerConfig {
             listen: default_listen(),
             request_timeout_secs: default_request_timeout_secs(),
             body_limit_mb: default_body_limit_mb(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AuthConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub api_keys_env: Option<String>,
+}
+
+impl Default for AuthConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            api_keys_env: None,
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct MetricsConfig {
+    #[serde(default = "default_metrics_enabled")]
+    pub enabled: bool,
+}
+
+impl Default for MetricsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_metrics_enabled(),
         }
     }
 }
@@ -152,7 +187,53 @@ impl Config {
             }
         }
 
+        if self.auth.enabled {
+            let Some(env) = &self.auth.api_keys_env else {
+                return Err(ConfigError::Invalid(
+                    "auth.api_keys_env is required when auth.enabled is true".into(),
+                ));
+            };
+            let keys = std::env::var(env).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "environment variable '{}' is required when auth is enabled",
+                    env
+                ))
+            })?;
+            if parse_csv(&keys).is_empty() {
+                return Err(ConfigError::Invalid(format!(
+                    "environment variable '{}' must contain at least one API key",
+                    env
+                )));
+            }
+        }
+
         Ok(())
+    }
+
+    pub fn runtime_options(&self) -> Result<crate::server::ServerOptions, ConfigError> {
+        self.validate()?;
+        let auth_keys = if self.auth.enabled {
+            let env = self.auth.api_keys_env.as_ref().ok_or_else(|| {
+                ConfigError::Invalid("auth.api_keys_env is required when auth.enabled is true".into())
+            })?;
+            let raw = std::env::var(env).map_err(|_| {
+                ConfigError::Invalid(format!(
+                    "environment variable '{}' is required when auth is enabled",
+                    env
+                ))
+            })?;
+            parse_csv(&raw)
+        } else {
+            Vec::new()
+        };
+
+        Ok(crate::server::ServerOptions {
+            request_timeout_secs: self.server.request_timeout_secs,
+            body_limit_bytes: self.server.body_limit_mb.saturating_mul(1024 * 1024) as usize,
+            auth_enabled: self.auth.enabled,
+            auth_keys,
+            metrics_enabled: self.metrics.enabled,
+        })
     }
 
     pub fn build_router(&self) -> Result<Router, ConfigError> {
@@ -229,4 +310,17 @@ fn default_log_level() -> String {
 
 fn default_log_format() -> String {
     "text".into()
+}
+
+fn default_metrics_enabled() -> bool {
+    true
+}
+
+fn parse_csv(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }

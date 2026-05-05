@@ -155,10 +155,34 @@ Before exposing ferryllm to users:
 - Confirm logs show incoming model and backend model.
 - Confirm request body logging is disabled or redacted.
 - Confirm health and readiness probes work.
+- Confirm `/metrics` works when metrics are enabled.
 - Confirm timeouts are configured.
 - Confirm max body size is configured.
 - Confirm API authentication is enabled for public deployments.
 - Confirm rate limits are configured if serving untrusted clients.
+
+## Public Relay Authentication
+
+Enable API key authentication for public deployments:
+
+```toml
+[auth]
+enabled = true
+api_keys_env = "FERRYLLM_API_KEYS"
+```
+
+Then set keys at runtime:
+
+```bash
+export FERRYLLM_API_KEYS="key-one,key-two"
+```
+
+Clients should send one of:
+
+```text
+Authorization: Bearer key-one
+x-api-key: key-one
+```
 
 ## Security Notes
 
