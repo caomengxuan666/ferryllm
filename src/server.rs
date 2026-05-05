@@ -550,13 +550,16 @@ async fn handle_anthropic_stream(
                     content_block: block @ ir::ContentBlock::ToolUse { .. },
                 } => {
                     // Tool block about to start – first close any active
-                    // text block that shares the source index.
-                    if let Some(&output_index) = index_remap.get(&index) {
+                    // text block that shares the source index, then assign
+                    // the tool a fresh output index.
+                    if let Some(&text_output) = index_remap.get(&index) {
                         if started_text_blocks.remove(&index) {
                             pending.push(ir::StreamEvent::ContentBlockStop {
-                                index: output_index,
+                                index: text_output,
                             });
                         }
+                        // Discard the text mapping so the tool gets a new index.
+                        index_remap.remove(&index);
                     }
                     let output_index = *index_remap.entry(index).or_insert_with(|| {
                         let next = next_output_index;
