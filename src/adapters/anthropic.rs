@@ -521,6 +521,7 @@ fn parse_anthropic_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
     match event {
         AnthropicSseEvent::MessageStart { message } => Ok(StreamEvent::MessageStart {
             message_id: message.id,
+            model: String::new(),
         }),
         AnthropicSseEvent::ContentBlockStart {
             index,

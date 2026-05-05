@@ -133,6 +133,7 @@ pub struct Usage {
 pub enum StreamEvent {
     MessageStart {
         message_id: String,
+        model: String,
     },
     ContentBlockStart {
         index: u32,

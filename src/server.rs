@@ -459,7 +459,7 @@ async fn handle_anthropic_stream(
     state: &Arc<AppState>,
     adapter: Arc<dyn crate::adapter::Adapter>,
     ir_req: ir::ChatRequest,
-    _display_model: String,
+    display_model: String,
 ) -> Result<axum::response::Response, AppError> {
     let backend_stream = with_timeout(state, adapter.chat_stream(&ir_req)).await?;
 
@@ -472,8 +472,9 @@ async fn handle_anthropic_stream(
         Adapter(Result<ir::StreamEvent, AdapterError>),
     }
 
-    let prepend = futures::stream::once(async move {
-        Control::Injected(ir::StreamEvent::MessageStart { message_id })
+    let prepend = futures::stream::once({
+        let model = display_model.clone();
+        async move { Control::Injected(ir::StreamEvent::MessageStart { message_id, model }) }
     });
 
     let adapter_stream = backend_stream.map(Control::Adapter);

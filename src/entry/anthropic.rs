@@ -332,7 +332,7 @@ pub fn ir_to_anthropic_response(ir: ChatResponse) -> AnthropicMessageResponse {
 /// Returns (event_type, data_json) or None if the event should be skipped.
 pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
     match event {
-        StreamEvent::MessageStart { message_id } => {
+        StreamEvent::MessageStart { message_id, model } => {
             let json = serde_json::json!({
                 "type": "message_start",
                 "message": {
@@ -340,8 +340,9 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                     "type": "message",
                     "role": "assistant",
                     "content": [],
-                    "model": null,
+                    "model": model,
                     "stop_reason": null,
+                    "stop_sequence": null,
                     "usage": null
                 }
             });
@@ -405,6 +406,7 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                 "type": "message_delta",
                 "delta": {
                     "stop_reason": stop_reason,
+                    "stop_sequence": null,
                 },
                 "usage": usage.map(|u| serde_json::json!({
                     "output_tokens": u.completion_tokens
