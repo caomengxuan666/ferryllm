@@ -2,6 +2,8 @@
 listen = "0.0.0.0:3000"
 request_timeout_secs = 120
 body_limit_mb = 32
+# Optional. Uncomment to cap in-flight requests.
+# max_concurrent_requests = 128
 
 [logging]
 level = "info"

@@ -28,11 +28,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
             let listen: SocketAddr = config.server.listen.parse()?;
             let router = config.build_router()?;
             let options = config.runtime_options()?;
-            let state = Arc::new(AppState {
-                router,
-                options,
-                metrics: Metrics::default(),
-            });
+            let state = Arc::new(AppState::new(router, options, Metrics::default()));
             let app = build_router(state);
             let listener = tokio::net::TcpListener::bind(listen).await?;
 

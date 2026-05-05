@@ -58,11 +58,11 @@ async fn main() {
         println!("[ferry] Ollama/vLLM backend registered");
     }
 
-    let state = Arc::new(AppState {
+    let state = Arc::new(AppState::new(
         router,
-        options: ServerOptions::default(),
-        metrics: Metrics::default(),
-    });
+        ServerOptions::default(),
+        Metrics::default(),
+    ));
     let app = build_router(state);
     let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
 

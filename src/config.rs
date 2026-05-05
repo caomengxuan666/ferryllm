@@ -33,6 +33,8 @@ pub struct ServerConfig {
     pub request_timeout_secs: u64,
     #[serde(default = "default_body_limit_mb")]
     pub body_limit_mb: u64,
+    #[serde(default)]
+    pub max_concurrent_requests: Option<usize>,
 }
 
 impl Default for ServerConfig {
@@ -41,6 +43,7 @@ impl Default for ServerConfig {
             listen: default_listen(),
             request_timeout_secs: default_request_timeout_secs(),
             body_limit_mb: default_body_limit_mb(),
+            max_concurrent_requests: None,
         }
     }
 }
@@ -230,6 +233,7 @@ impl Config {
         Ok(crate::server::ServerOptions {
             request_timeout_secs: self.server.request_timeout_secs,
             body_limit_bytes: self.server.body_limit_mb.saturating_mul(1024 * 1024) as usize,
+            max_concurrent_requests: self.server.max_concurrent_requests,
             auth_enabled: self.auth.enabled,
             auth_keys,
             metrics_enabled: self.metrics.enabled,

@@ -17,18 +17,37 @@ use crate::adapter::AdapterError;
 use crate::entry::{anthropic, openai};
 use crate::ir;
 use crate::router::{ResolvedFallback, Router as ModelRouter};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{error, info, warn};
 
 pub struct AppState {
     pub router: ModelRouter,
     pub options: ServerOptions,
     pub metrics: Metrics,
+    concurrency: Option<Arc<Semaphore>>,
+}
+
+impl AppState {
+    pub fn new(router: ModelRouter, options: ServerOptions, metrics: Metrics) -> Self {
+        let concurrency = options
+            .max_concurrent_requests
+            .filter(|limit| *limit > 0)
+            .map(Semaphore::new)
+            .map(Arc::new);
+        Self {
+            router,
+            options,
+            metrics,
+            concurrency,
+        }
+    }
 }
 
 #[derive(Clone)]
 pub struct ServerOptions {
     pub request_timeout_secs: u64,
     pub body_limit_bytes: usize,
+    pub max_concurrent_requests: Option<usize>,
     pub auth_enabled: bool,
     pub auth_keys: Vec<String>,
     pub metrics_enabled: bool,
@@ -39,6 +58,7 @@ impl Default for ServerOptions {
         Self {
             request_timeout_secs: 120,
             body_limit_bytes: 32 * 1024 * 1024,
+            max_concurrent_requests: None,
             auth_enabled: false,
             auth_keys: Vec::new(),
             metrics_enabled: true,
@@ -115,6 +135,7 @@ async fn openai_chat_handler(
 ) -> Result<axum::response::Response, AppError> {
     let started_at = Instant::now();
     preflight(&state, &headers, body.len())?;
+    let _permit = acquire_concurrency(&state)?;
     state.metrics.inc_requests();
     let request_id = request_id(&headers);
     let body: serde_json::Value =
@@ -248,6 +269,7 @@ async fn anthropic_messages_handler(
 ) -> Result<axum::response::Response, AppError> {
     let started_at = Instant::now();
     preflight(&state, &headers, body.len())?;
+    let _permit = acquire_concurrency(&state)?;
     state.metrics.inc_requests();
     let request_id = request_id(&headers);
     let body: serde_json::Value =
@@ -448,6 +470,16 @@ fn preflight(state: &Arc<AppState>, headers: &HeaderMap, body_len: usize) -> Res
     Ok(())
 }
 
+fn acquire_concurrency(state: &Arc<AppState>) -> Result<Option<OwnedSemaphorePermit>, AppError> {
+    let Some(limit) = state.concurrency.as_ref() else {
+        return Ok(None);
+    };
+    limit.clone().try_acquire_owned().map(Some).map_err(|_| {
+        state.metrics.inc_error();
+        AppError::too_many_requests("too many concurrent requests".into())
+    })
+}
+
 fn is_authorized(keys: &[String], headers: &HeaderMap) -> bool {
     let bearer = headers
         .get(axum::http::header::AUTHORIZATION)
@@ -538,6 +570,14 @@ impl AppError {
             status: StatusCode::PAYLOAD_TOO_LARGE,
             message: msg,
             kind: "payload_too_large",
+        }
+    }
+
+    fn too_many_requests(msg: String) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: msg,
+            kind: "too_many_requests",
         }
     }
 
@@ -640,11 +680,11 @@ mod tests {
 
     #[tokio::test]
     async fn chat_with_fallbacks_returns_backup_response_after_primary_failure() {
-        let state = Arc::new(AppState {
-            router: ModelRouter::new(),
-            options: ServerOptions::default(),
-            metrics: Metrics::default(),
-        });
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions::default(),
+            Metrics::default(),
+        ));
         let primary = Arc::new(TestAdapter {
             name: "primary",
             fail: true,
@@ -728,5 +768,47 @@ mod tests {
             assert_eq!(mapped.status, status);
             assert_eq!(mapped.kind, kind);
         }
+    }
+
+    #[test]
+    fn concurrency_limit_rejects_when_no_permits_remain() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                max_concurrent_requests: Some(1),
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+
+        let first = acquire_concurrency(&state).expect("first permit");
+        let second = acquire_concurrency(&state).expect_err("second permit should fail");
+
+        assert!(first.is_some());
+        assert_eq!(second.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(second.kind, "too_many_requests");
+        assert_eq!(
+            state.metrics.requests_error_total.load(Ordering::Relaxed),
+            1
+        );
+    }
+
+    #[test]
+    fn concurrency_limit_releases_when_permit_drops() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                max_concurrent_requests: Some(1),
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+
+        let first = acquire_concurrency(&state).expect("first permit");
+        drop(first);
+
+        let second = acquire_concurrency(&state).expect("second permit after drop");
+
+        assert!(second.is_some());
     }
 }
