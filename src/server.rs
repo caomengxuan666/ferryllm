@@ -18,7 +18,7 @@ use futures::StreamExt;
 
 use crate::adapter::AdapterError;
 use crate::entry::{anthropic, openai};
-use crate::ir::{self, ContentBlock};
+use crate::ir::{self, ContentBlock, ReasoningControl};
 use crate::router::{ResolvedFallback, Router as ModelRouter};
 use crate::token_observability;
 use crate::token_observability::DEBUG_REQUEST_SHAPE_FLAG;
@@ -73,6 +73,7 @@ pub struct ServerOptions {
     pub per_key_rate_limit_per_minute: Option<u64>,
     pub per_key_max_concurrent_requests: Option<usize>,
     pub metrics_enabled: bool,
+    pub default_reasoning_effort: Option<ir::ReasoningEffort>,
     pub prompt_cache: PromptCacheOptions,
 }
 
@@ -92,6 +93,7 @@ impl Default for ServerOptions {
             per_key_rate_limit_per_minute: None,
             per_key_max_concurrent_requests: None,
             metrics_enabled: true,
+            default_reasoning_effort: None,
             prompt_cache: PromptCacheOptions::default(),
         }
     }
@@ -523,6 +525,17 @@ fn apply_request_shape_debug_policy(req: &mut ir::ChatRequest, options: &PromptC
     }
 }
 
+fn apply_default_reasoning_policy(req: &mut ir::ChatRequest, options: &ServerOptions) {
+    if req.reasoning.is_none() {
+        if let Some(effort) = &options.default_reasoning_effort {
+            req.reasoning = Some(ReasoningControl {
+                effort: effort.clone(),
+                budget_tokens: None,
+            });
+        }
+    }
+}
+
 fn is_cacheable_block(block: &&mut ContentBlock) -> bool {
     matches!(
         block,
@@ -592,6 +605,7 @@ async fn openai_chat_handler(
     // Apply model rewrite so the backend sees the correct model name.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
+    apply_default_reasoning_policy(&mut ir_req, &state.options);
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -756,6 +770,7 @@ async fn anthropic_messages_handler(
     // Apply model rewrite.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
+    apply_default_reasoning_policy(&mut ir_req, &state.options);
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -1701,6 +1716,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         };
 
@@ -1822,6 +1838,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         }
     }
@@ -1946,6 +1963,68 @@ mod tests {
         assert_eq!(
             request.prompt_cache_key.as_deref(),
             Some("ferryllm:gpt-5.5:1:13")
+        );
+    }
+
+    #[test]
+    fn openai_prompt_cache_key_ignores_reasoning_control() {
+        let mut low = test_chat_request("gpt-5.5");
+        low.system = Some("stable system".into());
+        low.tools = vec![ir::Tool {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            cache_control: None,
+        }];
+        low.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::Low,
+            budget_tokens: None,
+        });
+
+        let mut high = low.clone();
+        high.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::High,
+            budget_tokens: Some(8192),
+        });
+
+        apply_openai_prompt_cache_policy(&mut low, &PromptCacheOptions::default());
+        apply_openai_prompt_cache_policy(&mut high, &PromptCacheOptions::default());
+
+        assert_eq!(low.prompt_cache_key, high.prompt_cache_key);
+    }
+
+    #[test]
+    fn default_reasoning_policy_fills_missing_reasoning_only() {
+        let options = ServerOptions {
+            default_reasoning_effort: Some(ir::ReasoningEffort::Medium),
+            ..ServerOptions::default()
+        };
+        let mut missing = test_chat_request("gpt-5.4");
+
+        apply_default_reasoning_policy(&mut missing, &options);
+
+        assert_eq!(
+            missing.reasoning,
+            Some(ir::ReasoningControl {
+                effort: ir::ReasoningEffort::Medium,
+                budget_tokens: None,
+            })
+        );
+
+        let mut explicit = test_chat_request("gpt-5.4");
+        explicit.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::High,
+            budget_tokens: Some(8192),
+        });
+
+        apply_default_reasoning_policy(&mut explicit, &options);
+
+        assert_eq!(
+            explicit.reasoning,
+            Some(ir::ReasoningControl {
+                effort: ir::ReasoningEffort::High,
+                budget_tokens: Some(8192),
+            })
         );
     }
 

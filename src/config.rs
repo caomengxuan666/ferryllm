@@ -7,6 +7,7 @@ use serde::Deserialize;
 
 use crate::adapter::AdapterError;
 use crate::adapters::{anthropic::AnthropicAdapter, openai::OpenaiAdapter};
+use crate::ir::ReasoningEffort;
 use crate::router::Router;
 
 #[derive(Debug, Deserialize)]
@@ -47,6 +48,8 @@ pub struct ServerConfig {
     pub circuit_breaker_failures: Option<u64>,
     #[serde(default = "default_circuit_breaker_cooldown_secs")]
     pub circuit_breaker_cooldown_secs: u64,
+    #[serde(default)]
+    pub default_reasoning_effort: Option<ReasoningEffort>,
 }
 
 impl Default for ServerConfig {
@@ -61,6 +64,7 @@ impl Default for ServerConfig {
             retry_backoff_ms: default_retry_backoff_ms(),
             circuit_breaker_failures: None,
             circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
+            default_reasoning_effort: None,
         }
     }
 }
@@ -302,6 +306,7 @@ impl Config {
             retry_backoff_ms: self.server.retry_backoff_ms,
             circuit_breaker_failures: self.server.circuit_breaker_failures,
             circuit_breaker_cooldown_secs: self.server.circuit_breaker_cooldown_secs,
+            default_reasoning_effort: self.server.default_reasoning_effort.clone(),
             auth_enabled: self.auth.enabled,
             auth_keys,
             per_key_rate_limit_per_minute: self.auth.per_key_rate_limit_per_minute,

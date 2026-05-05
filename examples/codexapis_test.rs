@@ -49,6 +49,7 @@ async fn main() {
         stream: false,
         prompt_cache_key: None,
         prompt_cache_retention: None,
+        reasoning: None,
         extra: Default::default(),
     };
 
@@ -151,6 +152,7 @@ async fn main() {
         stream: true,
         prompt_cache_key: None,
         prompt_cache_retention: None,
+        reasoning: None,
         extra: Default::default(),
     };
 

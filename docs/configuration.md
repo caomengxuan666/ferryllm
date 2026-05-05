@@ -38,6 +38,7 @@ request_timeout_secs = 120
 body_limit_mb = 32
 max_concurrent_requests = 128
 rate_limit_per_minute = 600
+default_reasoning_effort = "medium"
 
 [logging]
 level = "info"
@@ -97,6 +98,9 @@ Fields:
 - `max_concurrent_requests`: Optional maximum number of in-flight OpenAI/Anthropic chat requests. Requests above the limit return `429`.
 - `rate_limit_per_minute`: Optional global request rate cap. Requests above the limit return `429`.
 - `graceful_shutdown_secs`: Time allowed for in-flight requests during shutdown.
+- `default_reasoning_effort`: Optional default reasoning effort applied only when the client does not send an explicit reasoning or thinking control. Valid values are `none`, `low`, `medium`, `high`, `xhigh`, and `x_high`.
+
+`default_reasoning_effort` is a control-plane setting. It is not included in ferryllm's prompt cache key.
 
 ## Logging Section
 

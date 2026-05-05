@@ -24,7 +24,19 @@ pub struct AnthropicMessageRequest {
     #[serde(default)]
     pub tool_choice: Option<Value>,
     #[serde(default)]
+    pub thinking: Option<AnthropicThinkingConfig>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
     pub stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct AnthropicThinkingConfig {
+    #[serde(rename = "type")]
+    pub ty: String,
+    #[serde(default)]
+    pub budget_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -180,6 +192,7 @@ pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
         .tool_choice
         .as_ref()
         .and_then(parse_anthropic_tool_choice);
+    let reasoning = parse_anthropic_reasoning(req);
 
     ChatRequest {
         model: req.model.clone(),
@@ -194,7 +207,49 @@ pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
         stream: req.stream,
         prompt_cache_key: None,
         prompt_cache_retention: None,
+        reasoning,
         extra: Default::default(),
+    }
+}
+
+fn parse_anthropic_reasoning(req: &AnthropicMessageRequest) -> Option<ReasoningControl> {
+    if let Some(effort) = &req.reasoning_effort {
+        return Some(ReasoningControl {
+            effort: effort.clone(),
+            budget_tokens: req
+                .thinking
+                .as_ref()
+                .and_then(|thinking| thinking.budget_tokens),
+        });
+    }
+
+    let thinking = req.thinking.as_ref()?;
+    if thinking.ty == "disabled" {
+        return Some(ReasoningControl {
+            effort: ReasoningEffort::None,
+            budget_tokens: None,
+        });
+    }
+    if thinking.ty != "enabled" {
+        return None;
+    }
+
+    let budget_tokens = thinking.budget_tokens;
+    let effort = budget_tokens
+        .map(reasoning_effort_from_budget)
+        .unwrap_or(ReasoningEffort::Medium);
+    Some(ReasoningControl {
+        effort,
+        budget_tokens,
+    })
+}
+
+fn reasoning_effort_from_budget(budget_tokens: u32) -> ReasoningEffort {
+    match budget_tokens {
+        0..=2047 => ReasoningEffort::Low,
+        2048..=8191 => ReasoningEffort::Medium,
+        8192..=16383 => ReasoningEffort::High,
+        _ => ReasoningEffort::XHigh,
     }
 }
 
@@ -649,5 +704,34 @@ mod tests {
             }
             other => panic!("expected text block, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn anthropic_thinking_config_maps_to_ir_reasoning() {
+        let raw = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 8192,
+            "thinking": {
+                "type": "enabled",
+                "budget_tokens": 4096
+            },
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hello"
+                }
+            ]
+        });
+
+        let request: AnthropicMessageRequest = serde_json::from_value(raw).expect("parse request");
+        let ir = anthropic_to_ir(&request);
+
+        assert_eq!(
+            ir.reasoning,
+            Some(ReasoningControl {
+                effort: ReasoningEffort::Medium,
+                budget_tokens: Some(4096),
+            })
+        );
     }
 }

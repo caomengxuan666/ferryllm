@@ -25,7 +25,17 @@ pub struct OpenAIChatRequest {
     #[serde(default)]
     pub tool_choice: Option<Value>, // string or object
     #[serde(default)]
+    pub reasoning: Option<OpenAIReasoning>,
+    #[serde(default)]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
     pub stream: bool,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct OpenAIReasoning {
+    #[serde(default)]
+    pub effort: Option<ReasoningEffort>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -199,6 +209,7 @@ pub fn openai_to_ir(req: &OpenAIChatRequest) -> ChatRequest {
         .unwrap_or_default();
 
     let tool_choice = req.tool_choice.as_ref().and_then(parse_openai_tool_choice);
+    let reasoning = parse_openai_reasoning(req);
 
     let stop_sequences = match &req.stop {
         Some(Value::String(s)) => vec![s.clone()],
@@ -222,8 +233,21 @@ pub fn openai_to_ir(req: &OpenAIChatRequest) -> ChatRequest {
         stream: req.stream,
         prompt_cache_key: None,
         prompt_cache_retention: None,
+        reasoning,
         extra: Default::default(),
     }
+}
+
+fn parse_openai_reasoning(req: &OpenAIChatRequest) -> Option<ReasoningControl> {
+    let effort = req
+        .reasoning
+        .as_ref()
+        .and_then(|reasoning| reasoning.effort.clone())
+        .or_else(|| req.reasoning_effort.clone())?;
+    Some(ReasoningControl {
+        effort,
+        budget_tokens: None,
+    })
 }
 
 fn extract_openai_system(messages: &[OpenAIMessage]) -> Option<String> {
