@@ -590,7 +590,7 @@ async fn handle_anthropic_stream(
                 other => other,
             };
 
-            if let ir::StreamEvent::MessageDelta { .. } | ir::StreamEvent::MessageStop = &event {
+            if let ir::StreamEvent::MessageStop = &event {
                 closing_flag.store(true, Ordering::Relaxed);
             }
             pending.push(event);
