@@ -392,16 +392,6 @@ fn relocate_system_prefix_context(req: &mut ir::ChatRequest, options: &PromptCac
 
     system.replace_range(line_start..line_end, "");
     trim_blank_boundary(system, line_start);
-    req.messages.push(ir::Message {
-        role: ir::Role::User,
-        content: vec![ContentBlock::Text {
-            text: format!(
-                "Relocated dynamic system context for cache stability:\n{}",
-                moved.trim()
-            ),
-            cache_control: None,
-        }],
-    });
     info!(
         moved_bytes = moved.len(),
         range_start, range_end, "relocated dynamic system prefix context"
@@ -2015,17 +2005,10 @@ mod tests {
     }
 
     #[test]
-    fn relocate_system_prefix_context_moves_intersecting_line_to_user_context() {
+    fn relocate_system_prefix_context_removes_intersecting_line_without_reinjecting() {
         let mut request = test_chat_request("claude-sonnet-4-6");
         request.system =
             Some("stable heading\nvolatile session marker\nstable instruction tail".into());
-        request.messages.push(ir::Message {
-            role: ir::Role::User,
-            content: vec![ir::ContentBlock::Text {
-                text: "original user".into(),
-                cache_control: None,
-            }],
-        });
         let options = PromptCacheOptions {
             relocate_system_prefix_range: Some((16, 24)),
             ..PromptCacheOptions::default()
@@ -2037,19 +2020,7 @@ mod tests {
             request.system.as_deref(),
             Some("stable heading\nstable instruction tail")
         );
-        assert_eq!(request.messages.len(), 2);
-        match &request.messages[0].content[0] {
-            ir::ContentBlock::Text { text, .. } => {
-                assert_eq!(text, "original user");
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
-        match &request.messages[1].content[0] {
-            ir::ContentBlock::Text { text, .. } => {
-                assert!(text.contains("volatile session marker"));
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
+        assert!(request.messages.is_empty());
     }
 
     #[test]
