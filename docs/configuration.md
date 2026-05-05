@@ -266,6 +266,8 @@ For public relay deployments, API key authentication should be enabled.
 [auth]
 enabled = true
 api_keys_env = "FERRYLLM_API_KEYS"
+per_key_rate_limit_per_minute = 120
+per_key_max_concurrent_requests = 8
 ```
 
 `FERRYLLM_API_KEYS` contains comma-separated keys:
@@ -280,6 +282,8 @@ Clients can authenticate with either header:
 Authorization: Bearer key-one
 x-api-key: key-one
 ```
+
+Per-key limits are optional and only apply when authentication is enabled. They are tracked in-memory per server process and keyed by a hash of the authenticated API key, not by the raw key string.
 
 ## Metrics
 

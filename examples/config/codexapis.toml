@@ -14,6 +14,9 @@ format = "text"
 [auth]
 enabled = false
 # api_keys_env = "FERRYLLM_API_KEYS"
+# Optional per-client caps, keyed by the authenticated API key.
+# per_key_rate_limit_per_minute = 120
+# per_key_max_concurrent_requests = 8
 
 [metrics]
 enabled = true

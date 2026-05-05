@@ -1,6 +1,9 @@
+use std::collections::HashMap;
 use std::convert::Infallible;
+use std::hash::{Hash, Hasher};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
@@ -26,6 +29,7 @@ pub struct AppState {
     pub metrics: Metrics,
     concurrency: Option<Arc<Semaphore>>,
     rate_limiter: Option<RateLimiter>,
+    key_limiters: Mutex<HashMap<u64, Arc<KeyLimiter>>>,
 }
 
 impl AppState {
@@ -45,6 +49,7 @@ impl AppState {
             metrics,
             concurrency,
             rate_limiter,
+            key_limiters: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -57,6 +62,8 @@ pub struct ServerOptions {
     pub rate_limit_per_minute: Option<u64>,
     pub auth_enabled: bool,
     pub auth_keys: Vec<String>,
+    pub per_key_rate_limit_per_minute: Option<u64>,
+    pub per_key_max_concurrent_requests: Option<usize>,
     pub metrics_enabled: bool,
 }
 
@@ -69,6 +76,8 @@ impl Default for ServerOptions {
             rate_limit_per_minute: None,
             auth_enabled: false,
             auth_keys: Vec::new(),
+            per_key_rate_limit_per_minute: None,
+            per_key_max_concurrent_requests: None,
             metrics_enabled: true,
         }
     }
@@ -87,6 +96,17 @@ struct RateLimiter {
     limit: u64,
     window_epoch_minute: AtomicU64,
     used: AtomicU64,
+}
+
+struct KeyLimiter {
+    rate_limiter: Option<RateLimiter>,
+    concurrency: Option<Arc<Semaphore>>,
+}
+
+#[derive(Debug)]
+struct RequestGuards {
+    _global_concurrency: Option<OwnedSemaphorePermit>,
+    _key_concurrency: Option<OwnedSemaphorePermit>,
 }
 
 impl RateLimiter {
@@ -193,8 +213,7 @@ async fn openai_chat_handler(
     body: Bytes,
 ) -> Result<axum::response::Response, AppError> {
     let started_at = Instant::now();
-    preflight(&state, &headers, body.len())?;
-    let _permit = acquire_concurrency(&state)?;
+    let _guards = preflight(&state, &headers, body.len())?;
     state.metrics.inc_requests();
     let request_id = request_id(&headers);
     let body: serde_json::Value =
@@ -327,8 +346,7 @@ async fn anthropic_messages_handler(
     body: Bytes,
 ) -> Result<axum::response::Response, AppError> {
     let started_at = Instant::now();
-    preflight(&state, &headers, body.len())?;
-    let _permit = acquire_concurrency(&state)?;
+    let _guards = preflight(&state, &headers, body.len())?;
     state.metrics.inc_requests();
     let request_id = request_id(&headers);
     let body: serde_json::Value =
@@ -514,7 +532,11 @@ async fn metrics_handler(State(state): State<Arc<AppState>>) -> Result<String, A
     Ok(state.metrics.render())
 }
 
-fn preflight(state: &Arc<AppState>, headers: &HeaderMap, body_len: usize) -> Result<(), AppError> {
+fn preflight(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    body_len: usize,
+) -> Result<RequestGuards, AppError> {
     if body_len > state.options.body_limit_bytes {
         state.metrics.inc_error();
         return Err(AppError::payload_too_large(format!(
@@ -526,13 +548,25 @@ fn preflight(state: &Arc<AppState>, headers: &HeaderMap, body_len: usize) -> Res
         state.metrics.inc_error();
         return Err(AppError::unauthorized("invalid or missing API key".into()));
     }
+    let key_concurrency = if state.options.auth_enabled {
+        authenticated_key(&state.options.auth_keys, headers)
+            .map(|raw_key| acquire_key_limits(state, raw_key))
+            .transpose()?
+            .flatten()
+    } else {
+        None
+    };
     if let Some(rate_limiter) = &state.rate_limiter {
         if !rate_limiter.try_acquire() {
             state.metrics.inc_error();
             return Err(AppError::rate_limited("rate limit exceeded".into()));
         }
     }
-    Ok(())
+    let global_concurrency = acquire_concurrency(state)?;
+    Ok(RequestGuards {
+        _global_concurrency: global_concurrency,
+        _key_concurrency: key_concurrency,
+    })
 }
 
 fn acquire_concurrency(state: &Arc<AppState>) -> Result<Option<OwnedSemaphorePermit>, AppError> {
@@ -545,7 +579,61 @@ fn acquire_concurrency(state: &Arc<AppState>) -> Result<Option<OwnedSemaphorePer
     })
 }
 
-fn is_authorized(keys: &[String], headers: &HeaderMap) -> bool {
+fn acquire_key_limits(
+    state: &Arc<AppState>,
+    raw_key: &str,
+) -> Result<Option<OwnedSemaphorePermit>, AppError> {
+    let key_hash = hash_key(raw_key);
+    let limiter = {
+        let mut limiters = state
+            .key_limiters
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        Arc::clone(limiters.entry(key_hash).or_insert_with(|| {
+            Arc::new(KeyLimiter {
+                rate_limiter: state
+                    .options
+                    .per_key_rate_limit_per_minute
+                    .filter(|limit| *limit > 0)
+                    .map(RateLimiter::new),
+                concurrency: state
+                    .options
+                    .per_key_max_concurrent_requests
+                    .filter(|limit| *limit > 0)
+                    .map(Semaphore::new)
+                    .map(Arc::new),
+            })
+        }))
+    };
+
+    if let Some(rate_limiter) = &limiter.rate_limiter {
+        if !rate_limiter.try_acquire() {
+            state.metrics.inc_error();
+            return Err(AppError::rate_limited("per-key rate limit exceeded".into()));
+        }
+    }
+
+    if let Some(concurrency) = &limiter.concurrency {
+        concurrency
+            .clone()
+            .try_acquire_owned()
+            .map(Some)
+            .map_err(|_| {
+                state.metrics.inc_error();
+                AppError::too_many_requests("per-key concurrency limit exceeded".into())
+            })
+    } else {
+        Ok(None)
+    }
+}
+
+fn hash_key(key: &str) -> u64 {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn authenticated_key<'a>(keys: &'a [String], headers: &'a HeaderMap) -> Option<&'a str> {
     let bearer = headers
         .get(axum::http::header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok())
@@ -556,7 +644,11 @@ fn is_authorized(keys: &[String], headers: &HeaderMap) -> bool {
     bearer
         .into_iter()
         .chain(x_api_key)
-        .any(|candidate| keys.iter().any(|key| key == candidate))
+        .find(|candidate| keys.iter().any(|key| key == *candidate))
+}
+
+fn is_authorized(keys: &[String], headers: &HeaderMap) -> bool {
+    authenticated_key(keys, headers).is_some()
 }
 
 fn request_id(headers: &HeaderMap) -> String {
@@ -923,5 +1015,64 @@ mod tests {
             state.metrics.requests_error_total.load(Ordering::Relaxed),
             1
         );
+    }
+
+    #[test]
+    fn per_key_rate_limit_isolated_by_api_key() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                auth_enabled: true,
+                auth_keys: vec!["key-a".into(), "key-b".into()],
+                per_key_rate_limit_per_minute: Some(1),
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+        let headers_a = headers_with_bearer("key-a");
+        let headers_b = headers_with_bearer("key-b");
+
+        preflight(&state, &headers_a, 0).expect("first key-a request");
+        let err = preflight(&state, &headers_a, 0).expect_err("second key-a request should fail");
+        preflight(&state, &headers_b, 0).expect("first key-b request should pass");
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.kind, "rate_limited");
+        assert_eq!(err.message, "per-key rate limit exceeded");
+    }
+
+    #[test]
+    fn per_key_concurrency_limit_isolated_by_api_key() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                auth_enabled: true,
+                auth_keys: vec!["key-a".into(), "key-b".into()],
+                per_key_max_concurrent_requests: Some(1),
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+        let headers_a = headers_with_bearer("key-a");
+        let headers_b = headers_with_bearer("key-b");
+
+        let first = preflight(&state, &headers_a, 0).expect("first key-a request");
+        let err = preflight(&state, &headers_a, 0).expect_err("second key-a request should fail");
+        preflight(&state, &headers_b, 0).expect("first key-b request should pass");
+        drop(first);
+        preflight(&state, &headers_a, 0).expect("key-a permit released");
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.kind, "too_many_requests");
+        assert_eq!(err.message, "per-key concurrency limit exceeded");
+    }
+
+    fn headers_with_bearer(token: &str) -> HeaderMap {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            axum::http::header::AUTHORIZATION,
+            format!("Bearer {token}").parse().expect("header value"),
+        );
+        headers
     }
 }

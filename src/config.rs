@@ -57,6 +57,10 @@ pub struct AuthConfig {
     pub enabled: bool,
     #[serde(default)]
     pub api_keys_env: Option<String>,
+    #[serde(default)]
+    pub per_key_rate_limit_per_minute: Option<u64>,
+    #[serde(default)]
+    pub per_key_max_concurrent_requests: Option<usize>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -240,6 +244,8 @@ impl Config {
             rate_limit_per_minute: self.server.rate_limit_per_minute,
             auth_enabled: self.auth.enabled,
             auth_keys,
+            per_key_rate_limit_per_minute: self.auth.per_key_rate_limit_per_minute,
+            per_key_max_concurrent_requests: self.auth.per_key_max_concurrent_requests,
             metrics_enabled: self.metrics.enabled,
         })
     }
