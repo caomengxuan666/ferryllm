@@ -21,7 +21,7 @@ use crate::entry::{anthropic, openai};
 use crate::ir;
 use crate::router::{ResolvedFallback, Router as ModelRouter};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
-use tracing::{error, info, warn};
+use tracing::{error, info, trace, warn};
 
 pub struct AppState {
     pub router: ModelRouter,
@@ -600,6 +600,7 @@ async fn handle_anthropic_stream(
                 .filter_map(|e| {
                     let sse = anthropic::ir_to_anthropic_sse(e);
                     sse.map(|(event_type, data)| {
+                        trace!(target: "ferryllm::sse", event = %event_type, data = %data, "outgoing anthropic sse");
                         Ok::<_, Infallible>(Event::default().event(event_type).data(data))
                     })
                 })
@@ -612,6 +613,7 @@ async fn handle_anthropic_stream(
         if !closing_sent.load(Ordering::Relaxed) {
             let sse = anthropic::ir_to_anthropic_sse(ir::StreamEvent::MessageStop);
             sse.map(|(event_type, data)| {
+                trace!(target: "ferryllm::sse", event = %event_type, data = %data, "outgoing anthropic sse tail");
                 Ok::<_, Infallible>(Event::default().event(event_type).data(data))
             })
         } else {
