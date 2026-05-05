@@ -7,31 +7,36 @@ Universal LLM protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI
 [![Docs.rs](https://docs.rs/ferryllm/badge.svg)](https://docs.rs/ferryllm)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-ferryllm is a Rust gateway that lets clients and providers speak different LLM protocols through one shared internal representation. Use it as a local Claude Code bridge, a private model gateway, or an embeddable adapter library.
+ferryllm is a Rust gateway that normalizes client and provider LLM protocols into one internal representation. Use it as a Claude Code bridge, a private model gateway, or an embeddable adapter layer.
 
-## Highlights
+## What It Does
 
-- OpenAI-compatible entrypoint: `POST /v1/chat/completions`
-- Anthropic-compatible entrypoint: `POST /v1/messages`
-- OpenAI-compatible and Anthropic backend adapters
-- Claude Code to OpenAI-compatible backend routing
-- Model aliases, prefix routing, and model rewrite rules
-- Streaming SSE translation with tool-call support
-- Config-driven standalone server: `ferryllm serve --config ferryllm.toml`
-- Request timeout, body limit, API-key auth, rate limits, concurrency caps, metrics, retry, fallback, circuit breaker, and prompt cache support
-- Library-first architecture for adding new entry protocols and provider adapters
+- Accepts OpenAI-compatible chat requests at `POST /v1/chat/completions`
+- Accepts Anthropic-compatible messages at `POST /v1/messages`
+- Rewrites model names with exact and prefix routing rules
+- Forwards to OpenAI-compatible or Anthropic backend adapters
+- Preserves tool calls and SSE streaming behavior
+- Keeps prompt-cache keys stable while stripping transport metadata
+- Maps reasoning control through the IR and provider adapters
 
-## Why
+## Why ferryllm
 
-Most LLM gateways become an `N x M` matrix: every client protocol needs custom code for every provider protocol. ferryllm uses an `N + M` design instead.
+Most gateways end up as an `N x M` matrix: every client protocol needs custom code for every provider protocol.
+
+ferryllm uses `N + M` routing instead:
 
 ```text
 Client protocol -> ferryllm IR -> provider protocol
 ```
 
-That means a new backend adapter can immediately serve OpenAI-style clients, Anthropic-style clients, and Claude Code without rewriting every path.
+That makes it easier to:
 
-## Quick Start
+- put Claude Code behind a stable backend
+- expose one gateway to multiple client protocols
+- keep cache behavior predictable
+- add new providers without rewriting every client path
+
+## Fast Start
 
 Install from crates.io:
 
@@ -39,7 +44,7 @@ Install from crates.io:
 cargo install ferryllm
 ```
 
-Or run from source:
+Run from source:
 
 ```bash
 git clone https://github.com/caomengxuan666/ferryllm.git
@@ -47,7 +52,7 @@ cd ferryllm
 cargo run --features http --bin ferryllm -- serve --config examples/config/codexapis.toml
 ```
 
-Use an OpenAI-compatible provider key:
+Set the provider key and start the server:
 
 ```bash
 export CODX_API_KEY="your-api-key"
@@ -63,7 +68,7 @@ curl -s http://127.0.0.1:3000/v1/messages \
   -d '{"model":"cc-gpt55","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
-## Claude Code With GPT-5.4
+## Claude Code Bridge
 
 Claude Code sends Anthropic-format requests. ferryllm can receive those requests, rewrite the model, and forward them to an OpenAI-compatible backend.
 
@@ -104,13 +109,14 @@ See [docs/claude-code.md](docs/claude-code.md) for persistent Claude Code and cc
 
 ## Configuration
 
-ferryllm uses TOML configuration. Secrets stay in environment variables.
+ferryllm uses TOML config. Secrets stay in environment variables.
 
 ```toml
 [server]
 listen = "0.0.0.0:3000"
 request_timeout_secs = 120
 body_limit_mb = 32
+default_reasoning_effort = "medium"
 # Optional. Uncomment to cap in-flight requests.
 # max_concurrent_requests = 128
 # Optional. Uncomment to cap total requests per minute.
@@ -136,33 +142,15 @@ enabled = false
 enabled = true
 
 [prompt_cache]
-# LiteLLM-style automatic Anthropic cache breakpoint injection.
-# This preserves client-provided cache_control and adds ephemeral breakpoints
-# on stable system/tools/last user blocks when they are missing.
 auto_inject_anthropic_cache_control = true
 cache_system = true
 cache_tools = true
 cache_last_user_message = true
-# OpenAI-compatible prompt cache routing key. Keep it stable; do not include
-# request-specific conversation text in this value.
 openai_prompt_cache_key = "ferryllm"
-# Optional, if the upstream accepts it.
 # openai_prompt_cache_retention = "24h"
-# Safe long-running diagnostic: logs request structure, lengths, and hashes
-# without logging prompt text or tool-result bodies.
 debug_log_request_shape = true
-# Claude Code may place a volatile line near the beginning of system text.
-# Move the full line intersecting this byte range into a later user context
-# block so stable system instructions remain first for provider prompt caches.
 relocate_system_prefix_range = "0..1"
-# Temporary investigation only: this prints the relocated prompt text.
-# Disable after confirming the moved line.
 log_relocated_system_text = false
-# Strip transport metadata lines from system before forwarding.
-# Example:
-# x-anthropic-billing-header: cc_version=2.1.128.9fd; cc_entrypoint=cli; cch=877c4;
-# This helps move volatile Claude Code metadata such as cc_version and
-# cc_entrypoint out of the stable system prefix.
 strip_system_line_prefixes = ["x-anthropic-billing-header:"]
 
 [[providers]]
@@ -213,6 +201,21 @@ ferryllm check-config --config examples/config/codexapis.toml
 | `GET /readyz` | Readiness check |
 | `GET /metrics` | Prometheus-style metrics |
 
+## Prompt Cache
+
+ferryllm keeps prompt-cache keys stable while stripping transport metadata and normalizing the prompt prefix.
+
+With `prompt-observability` enabled, ferryllm logs prompt-cache usage and exposes it through `/metrics`.
+
+For Claude Code deployments, the important knobs are:
+
+- `relocate_system_prefix_range`
+- `strip_system_line_prefixes`
+- `openai_prompt_cache_key`
+- `default_reasoning_effort`
+
+See [docs/prompt-caching.md](docs/prompt-caching.md) and [docs/reasoning-control.md](docs/reasoning-control.md).
+
 ## Architecture
 
 ```text
@@ -252,17 +255,7 @@ See [docs/load-testing.md](docs/load-testing.md).
 - [Deployment](docs/deployment.md)
 - [Load testing](docs/load-testing.md)
 - [Prompt caching and token observability](docs/prompt-caching.md)
-
-## Prompt Cache
-
-With `prompt-observability` enabled, ferryllm exposes prompt-cache usage in
-logs and `/metrics`. In the current Claude Code + Codex relay setup, we have
-observed cache read rates around 99.8% on stable prompts when the system prefix
-is normalized and volatile transport metadata is stripped.
-
-The exact result depends on the upstream provider, prompt shape, and how stable
-the prefix is across requests. See [docs/prompt-caching.md](docs/prompt-caching.md)
-for the cache-key rules and the current tuning knobs.
+- [Reasoning control](docs/reasoning-control.md)
 
 ## Roadmap
 
