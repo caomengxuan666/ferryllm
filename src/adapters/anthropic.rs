@@ -326,7 +326,31 @@ fn ir_to_anthropic_request(req: &ChatRequest) -> AnthropicRequest {
         tools,
         tool_choice,
         stream: req.stream,
-        thinking: None,
+        thinking: req.reasoning.as_ref().and_then(anthropic_thinking_from_ir),
+    }
+}
+
+fn anthropic_thinking_from_ir(reasoning: &ReasoningControl) -> Option<AnthropicThinking> {
+    if reasoning.effort == ReasoningEffort::None {
+        return None;
+    }
+
+    let budget_tokens = reasoning
+        .budget_tokens
+        .unwrap_or_else(|| anthropic_budget_from_effort(&reasoning.effort));
+    Some(AnthropicThinking {
+        ty: "enabled".into(),
+        budget_tokens,
+    })
+}
+
+fn anthropic_budget_from_effort(effort: &ReasoningEffort) -> u32 {
+    match effort {
+        ReasoningEffort::None => 0,
+        ReasoningEffort::Low => 1024,
+        ReasoningEffort::Medium => 4096,
+        ReasoningEffort::High => 8192,
+        ReasoningEffort::XHigh => 16384,
     }
 }
 
@@ -489,6 +513,11 @@ fn summarize_anthropic_request_shape(req: &AnthropicRequest) -> String {
     );
     push_summary_field(
         &mut summary,
+        "thinking",
+        summarize_anthropic_thinking(req.thinking.as_ref()),
+    );
+    push_summary_field(
+        &mut summary,
         "system",
         summarize_anthropic_system_shape(req.system.as_ref()),
     );
@@ -502,6 +531,17 @@ fn summarize_anthropic_request_shape(req: &AnthropicRequest) -> String {
     }
     summary.push(']');
     summary
+}
+
+fn summarize_anthropic_thinking(thinking: Option<&AnthropicThinking>) -> String {
+    thinking
+        .map(|thinking| {
+            format!(
+                "type={},budget_tokens={}",
+                thinking.ty, thinking.budget_tokens
+            )
+        })
+        .unwrap_or_else(|| "-".into())
 }
 
 fn summarize_anthropic_tool_choice(tool_choice: &Option<AnthropicToolChoice>) -> String {
@@ -637,7 +677,7 @@ impl Adapter for AnthropicAdapter {
         info!(provider = "anthropic", model = %request.model, stream = request.stream, "sending chat request");
         trace!(provider = "anthropic", url = %url, body_model = %native.model, "anthropic request prepared");
         if request_shape_debug_enabled(request) {
-            info!(
+            debug!(
                 provider = "anthropic",
                 request_shape = %summarize_anthropic_request_shape(&native),
                 "anthropic outbound request shape"
@@ -684,7 +724,7 @@ impl Adapter for AnthropicAdapter {
         let url = format!("{}/v1/messages", self.base_url);
         info!(provider = "anthropic", model = %request.model, stream = true, "sending streaming request");
         if request_shape_debug_enabled(request) {
-            info!(
+            debug!(
                 provider = "anthropic",
                 request_shape = %summarize_anthropic_request_shape(&native),
                 "anthropic outbound streaming request shape"
@@ -839,6 +879,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         };
 
@@ -891,6 +932,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         };
 
@@ -902,6 +944,53 @@ mod tests {
         assert!(!summary.contains("SECRET_TOOL_RESULT"));
         assert!(summary.contains("hash="));
         assert!(summary.contains("len="));
+    }
+
+    #[test]
+    fn anthropic_request_includes_thinking_budget_from_reasoning() {
+        let mut req = ChatRequest {
+            model: "claude-sonnet-4-6".into(),
+            messages: vec![Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "hello".into(),
+                    cache_control: None,
+                }],
+            }],
+            system: None,
+            system_cache_control: None,
+            temperature: None,
+            max_tokens: Some(8192),
+            stop_sequences: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: None,
+            stream: false,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
+            reasoning: Some(ReasoningControl {
+                effort: ReasoningEffort::High,
+                budget_tokens: Some(2048),
+            }),
+            extra: Default::default(),
+        };
+
+        let native = ir_to_anthropic_request(&req);
+        let value = serde_json::to_value(&native).expect("serialize request");
+
+        assert_eq!(value["thinking"]["type"], "enabled");
+        assert_eq!(value["thinking"]["budget_tokens"], 2048);
+
+        let summary = summarize_anthropic_request_shape(&native);
+        assert!(summary.contains("thinking=type=enabled,budget_tokens=2048"));
+
+        req.reasoning = Some(ReasoningControl {
+            effort: ReasoningEffort::None,
+            budget_tokens: None,
+        });
+        let native = ir_to_anthropic_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+
+        assert!(value.get("thinking").is_none());
     }
 
     #[test]

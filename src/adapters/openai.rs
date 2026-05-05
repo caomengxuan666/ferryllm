@@ -20,6 +20,8 @@ use tracing::{debug, error, info, trace, warn};
 #[derive(Debug, Serialize)]
 struct OpenAIChatRequest {
     model: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reasoning: Option<OpenAIReasoning>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     tools: Vec<OpenAITool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -39,6 +41,11 @@ struct OpenAIChatRequest {
     stream: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     stream_options: Option<OpenAIStreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIReasoning {
+    effort: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -338,6 +345,7 @@ fn ir_to_openai_request(req: &ChatRequest) -> OpenAIChatRequest {
 
     OpenAIChatRequest {
         model: req.model.clone(),
+        reasoning: req.reasoning.as_ref().and_then(openai_reasoning_from_ir),
         messages,
         temperature: req.temperature,
         max_tokens: req.max_tokens,
@@ -351,6 +359,19 @@ fn ir_to_openai_request(req: &ChatRequest) -> OpenAIChatRequest {
             include_usage: true,
         }),
     }
+}
+
+fn openai_reasoning_from_ir(reasoning: &ReasoningControl) -> Option<OpenAIReasoning> {
+    let effort = match reasoning.effort {
+        ReasoningEffort::None => return None,
+        ReasoningEffort::Low => "low",
+        ReasoningEffort::Medium => "medium",
+        ReasoningEffort::High => "high",
+        ReasoningEffort::XHigh => "xhigh",
+    };
+    Some(OpenAIReasoning {
+        effort: effort.into(),
+    })
 }
 
 fn ir_message_to_openai(msg: &Message) -> OpenAIMessage {
@@ -658,6 +679,11 @@ fn summarize_openai_request_shape(req: &OpenAIChatRequest) -> String {
     );
     push_summary_field(
         &mut summary,
+        "reasoning",
+        summarize_openai_reasoning(req.reasoning.as_ref()),
+    );
+    push_summary_field(
+        &mut summary,
         "prompt_cache_key",
         summarize_optional_text(req.prompt_cache_key.as_deref()),
     );
@@ -676,6 +702,12 @@ fn summarize_openai_request_shape(req: &OpenAIChatRequest) -> String {
     }
     summary.push(']');
     summary
+}
+
+fn summarize_openai_reasoning(reasoning: Option<&OpenAIReasoning>) -> String {
+    reasoning
+        .map(|reasoning| format!("effort={}", reasoning.effort))
+        .unwrap_or_else(|| "-".into())
 }
 
 fn summarize_optional_tool_choice(tool_choice: &Option<OpenAIToolChoice>) -> String {
@@ -772,7 +804,7 @@ impl Adapter for OpenaiAdapter {
         trace!(provider = "openai", url = %url, body_model = %native.model, "openai request prepared");
         trace!(provider = "openai", request = %summarize_openai_request(&native), "openai outbound request");
         if request_shape_debug_enabled(request) {
-            info!(
+            debug!(
                 provider = "openai",
                 request_shape = %summarize_openai_request_shape(&native),
                 "openai outbound request shape"
@@ -819,7 +851,7 @@ impl Adapter for OpenaiAdapter {
         info!(provider = "openai", model = %request.model, stream = true, "sending streaming request");
         trace!(provider = "openai", request = %summarize_openai_request(&native), "openai outbound streaming request");
         if request_shape_debug_enabled(request) {
-            info!(
+            debug!(
                 provider = "openai",
                 request_shape = %summarize_openai_request_shape(&native),
                 "openai outbound streaming request shape"
@@ -1035,6 +1067,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         }
     }
@@ -1115,6 +1148,50 @@ mod tests {
             value["tools"][0]["function"]["parameters"].to_string(),
             r#"{"a":{"a":2,"b":1},"z":true}"#
         );
+    }
+
+    #[test]
+    fn openai_request_includes_reasoning_effort() {
+        let mut req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+                cache_control: None,
+            }],
+        }]);
+        req.reasoning = Some(ReasoningControl {
+            effort: ReasoningEffort::High,
+            budget_tokens: None,
+        });
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+
+        assert_eq!(value["reasoning"]["effort"], "high");
+
+        let native = ir_to_openai_request(&req);
+        let summary = summarize_openai_request_shape(&native);
+        assert!(summary.contains("reasoning=effort=high"));
+    }
+
+    #[test]
+    fn openai_request_omits_none_reasoning_effort() {
+        let mut req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+                cache_control: None,
+            }],
+        }]);
+        req.reasoning = Some(ReasoningControl {
+            effort: ReasoningEffort::None,
+            budget_tokens: None,
+        });
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+
+        assert!(value.get("reasoning").is_none());
     }
 
     #[test]

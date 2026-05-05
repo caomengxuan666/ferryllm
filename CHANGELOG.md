@@ -2,6 +2,23 @@
 
 All notable changes to ferryllm are documented here.
 
+## 0.1.3 - 2026-05-06
+
+### Added
+
+- Configurable server default reasoning effort through
+  `default_reasoning_effort`.
+- Reasoning-effort mapping across Anthropic-compatible, OpenAI-compatible, and
+  ferryllm internal request handling.
+- Reasoning-control documentation.
+
+### Changed
+
+- Stripped Claude Code transport metadata is dropped instead of being
+  re-injected into user-visible messages.
+- Relocated dynamic system-prefix metadata is removed from the prompt payload to
+  keep prompt-cache prefixes more stable.
+
 ## 0.1.2 - 2026-05-06
 
 ### Added

@@ -18,7 +18,7 @@ use futures::StreamExt;
 
 use crate::adapter::AdapterError;
 use crate::entry::{anthropic, openai};
-use crate::ir::{self, ContentBlock};
+use crate::ir::{self, ContentBlock, ReasoningControl};
 use crate::router::{ResolvedFallback, Router as ModelRouter};
 use crate::token_observability;
 use crate::token_observability::DEBUG_REQUEST_SHAPE_FLAG;
@@ -73,6 +73,7 @@ pub struct ServerOptions {
     pub per_key_rate_limit_per_minute: Option<u64>,
     pub per_key_max_concurrent_requests: Option<usize>,
     pub metrics_enabled: bool,
+    pub default_reasoning_effort: Option<ir::ReasoningEffort>,
     pub prompt_cache: PromptCacheOptions,
 }
 
@@ -92,6 +93,7 @@ impl Default for ServerOptions {
             per_key_rate_limit_per_minute: None,
             per_key_max_concurrent_requests: None,
             metrics_enabled: true,
+            default_reasoning_effort: None,
             prompt_cache: PromptCacheOptions::default(),
         }
     }
@@ -390,16 +392,6 @@ fn relocate_system_prefix_context(req: &mut ir::ChatRequest, options: &PromptCac
 
     system.replace_range(line_start..line_end, "");
     trim_blank_boundary(system, line_start);
-    req.messages.push(ir::Message {
-        role: ir::Role::User,
-        content: vec![ContentBlock::Text {
-            text: format!(
-                "Relocated dynamic system context for cache stability:\n{}",
-                moved.trim()
-            ),
-            cache_control: None,
-        }],
-    });
     info!(
         moved_bytes = moved.len(),
         range_start, range_end, "relocated dynamic system prefix context"
@@ -420,22 +412,21 @@ fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOp
         return;
     }
 
-    let original = system.clone();
     let mut kept = Vec::new();
-    let mut stripped = Vec::new();
-    for line in original.lines() {
+    let mut stripped_lines = 0usize;
+    for line in system.lines() {
         if options
             .strip_system_line_prefixes
             .iter()
             .any(|prefix| line.starts_with(prefix))
         {
-            stripped.push(line.to_string());
+            stripped_lines += 1;
         } else {
             kept.push(line.to_string());
         }
     }
 
-    if stripped.is_empty() {
+    if stripped_lines == 0 {
         return;
     }
 
@@ -444,20 +435,7 @@ fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOp
         req.system = None;
     }
 
-    for line in stripped {
-        req.messages.push(ir::Message {
-            role: ir::Role::User,
-            content: vec![ContentBlock::Text {
-                text: line,
-                cache_control: None,
-            }],
-        });
-    }
-
-    info!(
-        stripped_lines = req.messages.len(),
-        "stripped system line prefixes into trailing user context"
-    );
+    info!(stripped_lines, "dropped stripped system line prefixes");
 }
 
 fn line_range_intersecting(
@@ -520,6 +498,17 @@ fn apply_request_shape_debug_policy(req: &mut ir::ChatRequest, options: &PromptC
             DEBUG_REQUEST_SHAPE_FLAG.into(),
             serde_json::Value::Bool(true),
         );
+    }
+}
+
+fn apply_default_reasoning_policy(req: &mut ir::ChatRequest, options: &ServerOptions) {
+    if req.reasoning.is_none() {
+        if let Some(effort) = &options.default_reasoning_effort {
+            req.reasoning = Some(ReasoningControl {
+                effort: effort.clone(),
+                budget_tokens: None,
+            });
+        }
     }
 }
 
@@ -592,6 +581,7 @@ async fn openai_chat_handler(
     // Apply model rewrite so the backend sees the correct model name.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
+    apply_default_reasoning_policy(&mut ir_req, &state.options);
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -756,6 +746,7 @@ async fn anthropic_messages_handler(
     // Apply model rewrite.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
+    apply_default_reasoning_policy(&mut ir_req, &state.options);
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -1701,6 +1692,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         };
 
@@ -1822,6 +1814,7 @@ mod tests {
             stream: false,
             prompt_cache_key: None,
             prompt_cache_retention: None,
+            reasoning: None,
             extra: Default::default(),
         }
     }
@@ -1950,17 +1943,72 @@ mod tests {
     }
 
     #[test]
-    fn relocate_system_prefix_context_moves_intersecting_line_to_user_context() {
+    fn openai_prompt_cache_key_ignores_reasoning_control() {
+        let mut low = test_chat_request("gpt-5.5");
+        low.system = Some("stable system".into());
+        low.tools = vec![ir::Tool {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            cache_control: None,
+        }];
+        low.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::Low,
+            budget_tokens: None,
+        });
+
+        let mut high = low.clone();
+        high.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::High,
+            budget_tokens: Some(8192),
+        });
+
+        apply_openai_prompt_cache_policy(&mut low, &PromptCacheOptions::default());
+        apply_openai_prompt_cache_policy(&mut high, &PromptCacheOptions::default());
+
+        assert_eq!(low.prompt_cache_key, high.prompt_cache_key);
+    }
+
+    #[test]
+    fn default_reasoning_policy_fills_missing_reasoning_only() {
+        let options = ServerOptions {
+            default_reasoning_effort: Some(ir::ReasoningEffort::Medium),
+            ..ServerOptions::default()
+        };
+        let mut missing = test_chat_request("gpt-5.4");
+
+        apply_default_reasoning_policy(&mut missing, &options);
+
+        assert_eq!(
+            missing.reasoning,
+            Some(ir::ReasoningControl {
+                effort: ir::ReasoningEffort::Medium,
+                budget_tokens: None,
+            })
+        );
+
+        let mut explicit = test_chat_request("gpt-5.4");
+        explicit.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::High,
+            budget_tokens: Some(8192),
+        });
+
+        apply_default_reasoning_policy(&mut explicit, &options);
+
+        assert_eq!(
+            explicit.reasoning,
+            Some(ir::ReasoningControl {
+                effort: ir::ReasoningEffort::High,
+                budget_tokens: Some(8192),
+            })
+        );
+    }
+
+    #[test]
+    fn relocate_system_prefix_context_removes_intersecting_line_without_reinjecting() {
         let mut request = test_chat_request("claude-sonnet-4-6");
         request.system =
             Some("stable heading\nvolatile session marker\nstable instruction tail".into());
-        request.messages.push(ir::Message {
-            role: ir::Role::User,
-            content: vec![ir::ContentBlock::Text {
-                text: "original user".into(),
-                cache_control: None,
-            }],
-        });
         let options = PromptCacheOptions {
             relocate_system_prefix_range: Some((16, 24)),
             ..PromptCacheOptions::default()
@@ -1972,23 +2020,11 @@ mod tests {
             request.system.as_deref(),
             Some("stable heading\nstable instruction tail")
         );
-        assert_eq!(request.messages.len(), 2);
-        match &request.messages[0].content[0] {
-            ir::ContentBlock::Text { text, .. } => {
-                assert_eq!(text, "original user");
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
-        match &request.messages[1].content[0] {
-            ir::ContentBlock::Text { text, .. } => {
-                assert!(text.contains("volatile session marker"));
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
+        assert!(request.messages.is_empty());
     }
 
     #[test]
-    fn strip_system_line_prefixes_moves_only_matching_lines() {
+    fn strip_system_line_prefixes_drops_only_matching_lines() {
         let mut request = test_chat_request("claude-sonnet-4-6");
         request.system = Some(
             "stable heading\nx-anthropic-billing-header: debug\nstable instruction tail".into(),
@@ -2004,13 +2040,7 @@ mod tests {
             request.system.as_deref(),
             Some("stable heading\nstable instruction tail")
         );
-        assert_eq!(request.messages.len(), 1);
-        match &request.messages[0].content[0] {
-            ir::ContentBlock::Text { text, .. } => {
-                assert_eq!(text, "x-anthropic-billing-header: debug");
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
+        assert!(request.messages.is_empty());
     }
 
     #[test]

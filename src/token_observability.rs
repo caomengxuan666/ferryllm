@@ -8,7 +8,7 @@ use crate::ir::{canonical_json_string, ChatRequest, ContentBlock, Message, Tool}
 
 pub const DEBUG_REQUEST_SHAPE_FLAG: &str = "__ferryllm_debug_request_shape";
 pub const REQUEST_SHAPE_SYSTEM_WINDOW_BYTES: usize = 256;
-pub const REQUEST_SHAPE_SYSTEM_WINDOW_MAX: usize = 256;
+pub const REQUEST_SHAPE_SYSTEM_WINDOW_MAX: usize = 8;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TokenEstimate {

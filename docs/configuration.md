@@ -38,6 +38,7 @@ request_timeout_secs = 120
 body_limit_mb = 32
 max_concurrent_requests = 128
 rate_limit_per_minute = 600
+default_reasoning_effort = "medium"
 
 [logging]
 level = "info"
@@ -97,6 +98,9 @@ Fields:
 - `max_concurrent_requests`: Optional maximum number of in-flight OpenAI/Anthropic chat requests. Requests above the limit return `429`.
 - `rate_limit_per_minute`: Optional global request rate cap. Requests above the limit return `429`.
 - `graceful_shutdown_secs`: Time allowed for in-flight requests during shutdown.
+- `default_reasoning_effort`: Optional default reasoning effort applied only when the client does not send an explicit reasoning or thinking control. Valid values are `none`, `low`, `medium`, `high`, `xhigh`, and `x_high`.
+
+`default_reasoning_effort` is a control-plane setting. It is not included in ferryllm's prompt cache key.
 
 ## Logging Section
 
@@ -312,7 +316,7 @@ Fields:
 - `debug_log_request_shape`: Log outbound request structure, lengths, and stable hashes without logging prompt text. Keep this enabled when diagnosing provider-side prompt cache misses.
 - `relocate_system_prefix_range`: Optional `start..end` byte range. ferryllm moves the full system line intersecting this range into a user context block at the end of the message list, preserving the text while keeping stable prompt content first for provider prompt caches.
 - `log_relocated_system_text`: Print the relocated text verbatim for diagnosis. This can expose prompt content; keep it disabled outside short investigations.
-- `strip_system_line_prefixes`: Remove system lines that start with one of these prefixes and append them to trailing user context messages. Use this for transport metadata or other non-semantic boilerplate that should not affect cache prefix stability. A common Claude Code example is `x-anthropic-billing-header: cc_version=...; cc_entrypoint=...;`, where stripping the line keeps volatile metadata out of the stable system prefix while preserving the relocated instruction context.
+- `strip_system_line_prefixes`: Drop system lines that start with one of these prefixes. Use this for transport metadata or other non-semantic boilerplate that should not affect cache prefix stability or reach the model as user content. A common Claude Code example is `x-anthropic-billing-header: cc_version=...; cc_entrypoint=...;`.
 
 This follows LiteLLM-style prompt caching practice: cache stable prefixes, do not mark every block, and avoid injecting Anthropic-only metadata into OpenAI-compatible outbound requests.
 
