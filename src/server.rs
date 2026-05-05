@@ -159,6 +159,7 @@ async fn openai_chat_handler(
                 status: StatusCode::OK,
                 latency: started_at.elapsed(),
                 fallback_count,
+                error_kind: None,
             });
             Ok(response)
         }
@@ -172,6 +173,7 @@ async fn openai_chat_handler(
                 status: err.status,
                 latency: started_at.elapsed(),
                 fallback_count,
+                error_kind: Some(err.kind),
             });
             Err(err)
         }
@@ -290,6 +292,7 @@ async fn anthropic_messages_handler(
                 status: StatusCode::OK,
                 latency: started_at.elapsed(),
                 fallback_count,
+                error_kind: None,
             });
             Ok(response)
         }
@@ -303,6 +306,7 @@ async fn anthropic_messages_handler(
                 status: err.status,
                 latency: started_at.elapsed(),
                 fallback_count,
+                error_kind: Some(err.kind),
             });
             Err(err)
         }
@@ -365,6 +369,7 @@ async fn chat_with_fallbacks(
     match with_timeout(state, adapter.chat(ir_req)).await {
         Ok(resp) => Ok(resp),
         Err(primary_error) if !fallbacks.is_empty() => {
+            warn!(provider = %adapter.provider_name(), error_kind = primary_error.kind, status = %primary_error.status, "primary upstream request failed");
             let mut last_error = primary_error;
             for fallback in fallbacks {
                 let mut fallback_req = ir_req.clone();
@@ -372,7 +377,10 @@ async fn chat_with_fallbacks(
                 warn!(provider = %fallback.provider, model = %fallback_req.model, "trying fallback provider");
                 match with_timeout(state, fallback.adapter.chat(&fallback_req)).await {
                     Ok(resp) => return Ok(resp),
-                    Err(err) => last_error = err,
+                    Err(err) => {
+                        warn!(provider = %fallback.provider, error_kind = err.kind, status = %err.status, "fallback upstream request failed");
+                        last_error = err
+                    }
                 }
             }
             Err(last_error)
@@ -390,6 +398,7 @@ struct RequestLog<'a> {
     status: StatusCode,
     latency: Duration,
     fallback_count: usize,
+    error_kind: Option<&'a str>,
 }
 
 fn log_access(log: RequestLog<'_>) {
@@ -402,6 +411,7 @@ fn log_access(log: RequestLog<'_>) {
         status = %log.status,
         latency_ms = log.latency.as_millis(),
         fallback_count = log.fallback_count,
+        error_kind = log.error_kind.unwrap_or("none"),
         "request completed"
     );
 }
@@ -503,6 +513,7 @@ fn uuid_v4() -> String {
 struct AppError {
     status: StatusCode,
     message: String,
+    kind: &'static str,
 }
 
 impl AppError {
@@ -510,6 +521,7 @@ impl AppError {
         Self {
             status: StatusCode::BAD_REQUEST,
             message: msg,
+            kind: "bad_request",
         }
     }
 
@@ -517,6 +529,7 @@ impl AppError {
         Self {
             status: StatusCode::UNAUTHORIZED,
             message: msg,
+            kind: "unauthorized",
         }
     }
 
@@ -524,6 +537,7 @@ impl AppError {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
             message: msg,
+            kind: "payload_too_large",
         }
     }
 
@@ -531,6 +545,7 @@ impl AppError {
         Self {
             status: StatusCode::GATEWAY_TIMEOUT,
             message: msg,
+            kind: "timeout",
         }
     }
 
@@ -538,19 +553,23 @@ impl AppError {
         Self {
             status: StatusCode::NOT_FOUND,
             message: msg,
+            kind: "not_found",
         }
     }
 
     fn from_adapter(err: AdapterError) -> Self {
-        let status = match &err {
-            AdapterError::BackendError(_) => StatusCode::BAD_GATEWAY,
-            AdapterError::TranslationError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            AdapterError::StreamError(_) => StatusCode::INTERNAL_SERVER_ERROR,
-            AdapterError::UnsupportedFeature { .. } => StatusCode::NOT_IMPLEMENTED,
+        let (status, kind) = match &err {
+            AdapterError::BackendError(_) => (StatusCode::BAD_GATEWAY, "upstream_backend"),
+            AdapterError::TranslationError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "translation"),
+            AdapterError::StreamError(_) => (StatusCode::INTERNAL_SERVER_ERROR, "stream"),
+            AdapterError::UnsupportedFeature { .. } => {
+                (StatusCode::NOT_IMPLEMENTED, "unsupported_feature")
+            }
         };
         Self {
             status,
             message: err.to_string(),
+            kind,
         }
     }
 }
@@ -674,5 +693,40 @@ mod tests {
 
         assert!(rendered.contains("ferryllm_request_latency_micros_total 400"));
         assert!(rendered.contains("ferryllm_request_latency_micros_average 200"));
+    }
+
+    #[test]
+    fn adapter_error_mapping_sets_status_and_kind() {
+        let cases = [
+            (
+                AdapterError::BackendError("x".into()),
+                StatusCode::BAD_GATEWAY,
+                "upstream_backend",
+            ),
+            (
+                AdapterError::TranslationError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "translation",
+            ),
+            (
+                AdapterError::StreamError("x".into()),
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "stream",
+            ),
+            (
+                AdapterError::UnsupportedFeature {
+                    provider: "p".into(),
+                    feature: "f".into(),
+                },
+                StatusCode::NOT_IMPLEMENTED,
+                "unsupported_feature",
+            ),
+        ];
+
+        for (err, status, kind) in cases {
+            let mapped = AppError::from_adapter(err);
+            assert_eq!(mapped.status, status);
+            assert_eq!(mapped.kind, kind);
+        }
     }
 }
