@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     body::Bytes,
@@ -52,6 +52,7 @@ pub struct Metrics {
     requests_ok_total: AtomicU64,
     requests_error_total: AtomicU64,
     upstream_errors_total: AtomicU64,
+    request_latency_micros_total: AtomicU64,
 }
 
 impl Metrics {
@@ -71,13 +72,25 @@ impl Metrics {
         self.upstream_errors_total.fetch_add(1, Ordering::Relaxed);
     }
 
+    fn observe_latency(&self, elapsed: Duration) {
+        self.request_latency_micros_total.fetch_add(
+            elapsed.as_micros().min(u128::from(u64::MAX)) as u64,
+            Ordering::Relaxed,
+        );
+    }
+
     fn render(&self) -> String {
+        let requests_total = self.requests_total.load(Ordering::Relaxed);
+        let latency_total = self.request_latency_micros_total.load(Ordering::Relaxed);
+        let latency_average = latency_total.checked_div(requests_total).unwrap_or(0);
         format!(
-            "# TYPE ferryllm_requests_total counter\nferryllm_requests_total {}\n# TYPE ferryllm_requests_ok_total counter\nferryllm_requests_ok_total {}\n# TYPE ferryllm_requests_error_total counter\nferryllm_requests_error_total {}\n# TYPE ferryllm_upstream_errors_total counter\nferryllm_upstream_errors_total {}\n",
-            self.requests_total.load(Ordering::Relaxed),
+            "# TYPE ferryllm_requests_total counter\nferryllm_requests_total {}\n# TYPE ferryllm_requests_ok_total counter\nferryllm_requests_ok_total {}\n# TYPE ferryllm_requests_error_total counter\nferryllm_requests_error_total {}\n# TYPE ferryllm_upstream_errors_total counter\nferryllm_upstream_errors_total {}\n# TYPE ferryllm_request_latency_micros_total counter\nferryllm_request_latency_micros_total {}\n# TYPE ferryllm_request_latency_micros_average gauge\nferryllm_request_latency_micros_average {}\n",
+            requests_total,
             self.requests_ok_total.load(Ordering::Relaxed),
             self.requests_error_total.load(Ordering::Relaxed),
             self.upstream_errors_total.load(Ordering::Relaxed),
+            latency_total,
+            latency_average,
         )
     }
 }
@@ -100,6 +113,7 @@ async fn openai_chat_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, AppError> {
+    let started_at = Instant::now();
     preflight(&state, &headers, body.len())?;
     state.metrics.inc_requests();
     let request_id = request_id(&headers);
@@ -120,7 +134,7 @@ async fn openai_chat_handler(
     ir_req.model = route.model;
     info!(request_id = %request_id, entry = "openai", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = route.fallbacks.len(), "resolved route");
 
-    if stream {
+    let response = if stream {
         handle_openai_stream(&state, route.adapter, ir_req, display_model).await
     } else {
         handle_openai_chat(
@@ -131,7 +145,9 @@ async fn openai_chat_handler(
             display_model,
         )
         .await
-    }
+    };
+    state.metrics.observe_latency(started_at.elapsed());
+    response
 }
 
 async fn handle_openai_chat(
@@ -200,6 +216,7 @@ async fn anthropic_messages_handler(
     headers: HeaderMap,
     body: Bytes,
 ) -> Result<axum::response::Response, AppError> {
+    let started_at = Instant::now();
     preflight(&state, &headers, body.len())?;
     state.metrics.inc_requests();
     let request_id = request_id(&headers);
@@ -220,7 +237,7 @@ async fn anthropic_messages_handler(
     ir_req.model = route.model;
     info!(request_id = %request_id, entry = "anthropic", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = route.fallbacks.len(), "resolved route");
 
-    if stream {
+    let response = if stream {
         handle_anthropic_stream(&state, route.adapter, ir_req, display_model).await
     } else {
         handle_anthropic_chat(
@@ -231,7 +248,9 @@ async fn anthropic_messages_handler(
             display_model,
         )
         .await
-    }
+    };
+    state.metrics.observe_latency(started_at.elapsed());
+    response
 }
 
 async fn handle_anthropic_chat(
@@ -559,5 +578,19 @@ mod tests {
             state.metrics.upstream_errors_total.load(Ordering::Relaxed),
             1
         );
+    }
+
+    #[test]
+    fn metrics_render_includes_latency_totals_and_average() {
+        let metrics = Metrics::default();
+        metrics.inc_requests();
+        metrics.inc_requests();
+        metrics.observe_latency(Duration::from_micros(100));
+        metrics.observe_latency(Duration::from_micros(300));
+
+        let rendered = metrics.render();
+
+        assert!(rendered.contains("ferryllm_request_latency_micros_total 400"));
+        assert!(rendered.contains("ferryllm_request_latency_micros_average 200"));
     }
 }
