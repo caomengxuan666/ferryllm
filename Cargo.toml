@@ -1,6 +1,6 @@
 [package]
 name = "ferryllm"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Universal LLM protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI-compatible backends."
 license = "MIT"

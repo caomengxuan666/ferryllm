@@ -18,7 +18,7 @@ ferryllm 是一个 Rust 编写的 LLM 协议网关。它把不同客户端协议
 - 支持模型别名、前缀路由和模型名重写
 - 支持 SSE 流式协议转换和工具调用
 - 配置驱动独立服务：`ferryllm serve --config ferryllm.toml`
-- 支持超时、body 限制、API key 鉴权、限流、并发限制、metrics、retry、fallback 和 circuit breaker
+- 支持超时、body 限制、API key 鉴权、限流、并发限制、metrics、retry、fallback、circuit breaker 和 prompt cache
 - `N + M` adapter 架构，方便继续接入新协议和新 provider
 
 ## 为什么需要 ferryllm
@@ -111,13 +111,59 @@ ferryllm 使用 TOML 配置，密钥通过环境变量注入。
 listen = "0.0.0.0:3000"
 request_timeout_secs = 120
 body_limit_mb = 32
+# Optional. Uncomment to cap in-flight requests.
+# max_concurrent_requests = 128
+# Optional. Uncomment to cap total requests per minute.
+# rate_limit_per_minute = 600
+# Optional non-streaming upstream resilience. Streaming requests are not retried.
+# retry_attempts = 2
+# retry_backoff_ms = 100
+# circuit_breaker_failures = 5
+# circuit_breaker_cooldown_secs = 30
 
 [logging]
 level = "info"
 format = "text"
 
+[auth]
+enabled = false
+# api_keys_env = "FERRYLLM_API_KEYS"
+# Optional per-client caps, keyed by the authenticated API key.
+# per_key_rate_limit_per_minute = 120
+# per_key_max_concurrent_requests = 8
+
 [metrics]
 enabled = true
+
+[prompt_cache]
+# LiteLLM 风格的 Anthropic cache breakpoint 自动注入。
+# 会保留客户端显式提供的 cache_control，并在缺失时为稳定的
+# system/tools/最后一条 user block 自动补上 ephemeral breakpoint。
+auto_inject_anthropic_cache_control = true
+cache_system = true
+cache_tools = true
+cache_last_user_message = true
+# OpenAI-compatible prompt cache 路由 key。保持稳定，不要把每次
+# 请求都变化的会话文本放进这个值里。
+openai_prompt_cache_key = "ferryllm"
+# Optional, if the upstream accepts it.
+# openai_prompt_cache_retention = "24h"
+# 适合长时间排查的安全诊断：只记录请求结构、长度和哈希，
+# 不记录 prompt 正文或 tool-result body。
+debug_log_request_shape = true
+# Claude Code 可能会把易变的一行放在 system 文本开头附近。
+# 把与这个字节区间相交的整行挪到后面的 user context block，
+# 让稳定的 system 指令继续留在 provider prompt cache 前缀里。
+relocate_system_prefix_range = "0..1"
+# 仅用于临时排查：打印被搬移的 prompt 文本。
+# 确认边界后请关闭。
+log_relocated_system_text = false
+# 转发前从 system 中去掉这些 transport metadata 前缀行。
+# 例如：
+# x-anthropic-billing-header: cc_version=2.1.128.9fd; cc_entrypoint=cli; cch=877c4;
+# 这样可以把 cc_version、cc_entrypoint 之类易变的 Claude Code 元数据
+# 从稳定的 system prefix 中移走。
+strip_system_line_prefixes = ["x-anthropic-billing-header:"]
 
 [[providers]]
 name = "codexapis"
@@ -133,6 +179,19 @@ rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "claude-"
+provider = "codexapis"
+rewrite_model = "gpt-5.4"
+
+[[routes]]
+match = "gpt-"
+provider = "codexapis"
+
+[[routes]]
+match = "grok-"
+provider = "codexapis"
+
+[[routes]]
+match = "*"
 provider = "codexapis"
 rewrite_model = "gpt-5.4"
 ```

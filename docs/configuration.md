@@ -312,7 +312,7 @@ Fields:
 - `debug_log_request_shape`: Log outbound request structure, lengths, and stable hashes without logging prompt text. Keep this enabled when diagnosing provider-side prompt cache misses.
 - `relocate_system_prefix_range`: Optional `start..end` byte range. ferryllm moves the full system line intersecting this range into a user context block at the end of the message list, preserving the text while keeping stable prompt content first for provider prompt caches.
 - `log_relocated_system_text`: Print the relocated text verbatim for diagnosis. This can expose prompt content; keep it disabled outside short investigations.
-- `strip_system_line_prefixes`: Remove system lines that start with one of these prefixes and append them to trailing user context messages. Use this for transport metadata or other non-semantic boilerplate that should not affect cache prefix stability.
+- `strip_system_line_prefixes`: Remove system lines that start with one of these prefixes and append them to trailing user context messages. Use this for transport metadata or other non-semantic boilerplate that should not affect cache prefix stability. A common Claude Code example is `x-anthropic-billing-header: cc_version=...; cc_entrypoint=...;`, where stripping the line keeps volatile metadata out of the stable system prefix while preserving the relocated instruction context.
 
 This follows LiteLLM-style prompt caching practice: cache stable prefixes, do not mark every block, and avoid injecting Anthropic-only metadata into OpenAI-compatible outbound requests.
 

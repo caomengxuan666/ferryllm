@@ -18,7 +18,7 @@ ferryllm is a Rust gateway that lets clients and providers speak different LLM p
 - Model aliases, prefix routing, and model rewrite rules
 - Streaming SSE translation with tool-call support
 - Config-driven standalone server: `ferryllm serve --config ferryllm.toml`
-- Request timeout, body limit, API-key auth, rate limits, concurrency caps, metrics, retry, fallback, and circuit breaker support
+- Request timeout, body limit, API-key auth, rate limits, concurrency caps, metrics, retry, fallback, circuit breaker, and prompt cache support
 - Library-first architecture for adding new entry protocols and provider adapters
 
 ## Why
@@ -111,13 +111,59 @@ ferryllm uses TOML configuration. Secrets stay in environment variables.
 listen = "0.0.0.0:3000"
 request_timeout_secs = 120
 body_limit_mb = 32
+# Optional. Uncomment to cap in-flight requests.
+# max_concurrent_requests = 128
+# Optional. Uncomment to cap total requests per minute.
+# rate_limit_per_minute = 600
+# Optional non-streaming upstream resilience. Streaming requests are not retried.
+# retry_attempts = 2
+# retry_backoff_ms = 100
+# circuit_breaker_failures = 5
+# circuit_breaker_cooldown_secs = 30
 
 [logging]
 level = "info"
 format = "text"
 
+[auth]
+enabled = false
+# api_keys_env = "FERRYLLM_API_KEYS"
+# Optional per-client caps, keyed by the authenticated API key.
+# per_key_rate_limit_per_minute = 120
+# per_key_max_concurrent_requests = 8
+
 [metrics]
 enabled = true
+
+[prompt_cache]
+# LiteLLM-style automatic Anthropic cache breakpoint injection.
+# This preserves client-provided cache_control and adds ephemeral breakpoints
+# on stable system/tools/last user blocks when they are missing.
+auto_inject_anthropic_cache_control = true
+cache_system = true
+cache_tools = true
+cache_last_user_message = true
+# OpenAI-compatible prompt cache routing key. Keep it stable; do not include
+# request-specific conversation text in this value.
+openai_prompt_cache_key = "ferryllm"
+# Optional, if the upstream accepts it.
+# openai_prompt_cache_retention = "24h"
+# Safe long-running diagnostic: logs request structure, lengths, and hashes
+# without logging prompt text or tool-result bodies.
+debug_log_request_shape = true
+# Claude Code may place a volatile line near the beginning of system text.
+# Move the full line intersecting this byte range into a later user context
+# block so stable system instructions remain first for provider prompt caches.
+relocate_system_prefix_range = "0..1"
+# Temporary investigation only: this prints the relocated prompt text.
+# Disable after confirming the moved line.
+log_relocated_system_text = false
+# Strip transport metadata lines from system before forwarding.
+# Example:
+# x-anthropic-billing-header: cc_version=2.1.128.9fd; cc_entrypoint=cli; cch=877c4;
+# This helps move volatile Claude Code metadata such as cc_version and
+# cc_entrypoint out of the stable system prefix.
+strip_system_line_prefixes = ["x-anthropic-billing-header:"]
 
 [[providers]]
 name = "codexapis"
@@ -133,6 +179,19 @@ rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "claude-"
+provider = "codexapis"
+rewrite_model = "gpt-5.4"
+
+[[routes]]
+match = "gpt-"
+provider = "codexapis"
+
+[[routes]]
+match = "grok-"
+provider = "codexapis"
+
+[[routes]]
+match = "*"
 provider = "codexapis"
 rewrite_model = "gpt-5.4"
 ```

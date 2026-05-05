@@ -2,6 +2,18 @@
 
 All notable changes to ferryllm are documented here.
 
+## 0.1.2 - 2026-05-06
+
+### Added
+
+- README and README.zh-CN now document the full standalone server example,
+  including auth, resilience, and prompt-cache settings.
+- README and README.zh-CN now explain stripping
+  `x-anthropic-billing-header:` lines to move volatile Claude Code metadata such
+  as `cc_version` and `cc_entrypoint` out of the stable system prefix.
+- Release workflow permissions now include `id-token: write` for crates.io
+  trusted publishing setups.
+
 ## 0.1.1 - 2026-05-05
 
 ### Fixed
