@@ -682,3 +682,112 @@ fn parse_openai_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
 
     Err(AdapterError::StreamError("no choices in SSE chunk".into()))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn base_request(messages: Vec<Message>) -> ChatRequest {
+        ChatRequest {
+            model: "gpt-5.5".into(),
+            messages,
+            system: None,
+            temperature: None,
+            max_tokens: Some(128),
+            stop_sequences: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: None,
+            stream: false,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn assistant_tool_uses_become_single_openai_tool_calls_message() {
+        let req = base_request(vec![Message {
+            role: Role::Assistant,
+            content: vec![
+                ContentBlock::ToolUse {
+                    id: "toolu_1".into(),
+                    name: "read_file".into(),
+                    input: json!({"path": "Cargo.toml"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "toolu_2".into(),
+                    name: "shell".into(),
+                    input: json!({"command": ["pwd"]}),
+                },
+            ],
+        }]);
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+        let messages = value["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "assistant");
+        assert!(messages[0].get("content").is_none());
+
+        let tool_calls = messages[0]["tool_calls"].as_array().expect("tool calls");
+        assert_eq!(tool_calls.len(), 2);
+        assert_eq!(tool_calls[0]["id"], "toolu_1");
+        assert_eq!(tool_calls[0]["function"]["name"], "read_file");
+        assert_eq!(tool_calls[0]["function"]["arguments"], r#"{"path":"Cargo.toml"}"#);
+        assert_eq!(tool_calls[1]["id"], "toolu_2");
+        assert_eq!(tool_calls[1]["function"]["name"], "shell");
+        assert_eq!(tool_calls[1]["function"]["arguments"], r#"{"command":["pwd"]}"#);
+    }
+
+    #[test]
+    fn tool_results_become_openai_tool_role_messages_with_matching_ids() {
+        let req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![
+                ContentBlock::ToolResult {
+                    id: "toolu_1".into(),
+                    content: "file contents".into(),
+                    is_error: false,
+                },
+                ContentBlock::ToolResult {
+                    id: "toolu_2".into(),
+                    content: "shell output".into(),
+                    is_error: false,
+                },
+            ],
+        }]);
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+        let messages = value["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0]["role"], "tool");
+        assert_eq!(messages[0]["tool_call_id"], "toolu_1");
+        assert_eq!(messages[0]["content"], "file contents");
+        assert_eq!(messages[1]["role"], "tool");
+        assert_eq!(messages[1]["tool_call_id"], "toolu_2");
+        assert_eq!(messages[1]["content"], "shell output");
+    }
+
+    #[test]
+    fn empty_tool_result_content_serializes_as_space_not_null() {
+        let req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                id: "toolu_empty".into(),
+                content: String::new(),
+                is_error: false,
+            }],
+        }]);
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+        let messages = value["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "tool");
+        assert_eq!(messages[0]["tool_call_id"], "toolu_empty");
+        assert_eq!(messages[0]["content"], " ");
+    }
+}

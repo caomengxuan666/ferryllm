@@ -460,3 +460,70 @@ fn content_block_to_anthropic_sse(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn anthropic_tool_use_and_tool_result_preserve_ids_in_ir() {
+        let raw = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 128,
+            "messages": [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": "toolu_abc",
+                            "name": "read_file",
+                            "input": {"path": "Cargo.toml"}
+                        }
+                    ]
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": "toolu_abc",
+                            "content": "file contents",
+                            "is_error": false
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let request: AnthropicMessageRequest = serde_json::from_value(raw).expect("parse request");
+        let ir = anthropic_to_ir(&request);
+
+        assert_eq!(ir.messages.len(), 2);
+        assert_eq!(ir.messages[0].role, Role::Assistant);
+        assert_eq!(ir.messages[1].role, Role::User);
+
+        match &ir.messages[0].content[0] {
+            ContentBlock::ToolUse { id, name, input } => {
+                assert_eq!(id, "toolu_abc");
+                assert_eq!(name, "read_file");
+                assert_eq!(input, &json!({"path": "Cargo.toml"}));
+            }
+            other => panic!("expected tool use, got {other:?}"),
+        }
+
+        match &ir.messages[1].content[0] {
+            ContentBlock::ToolResult {
+                id,
+                content,
+                is_error,
+            } => {
+                assert_eq!(id, "toolu_abc");
+                assert_eq!(content, "file contents");
+                assert!(!is_error);
+            }
+            other => panic!("expected tool result, got {other:?}"),
+        }
+    }
+}
