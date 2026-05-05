@@ -63,7 +63,7 @@ curl -s http://127.0.0.1:3000/v1/messages \
   -d '{"model":"cc-gpt55","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
-## 让 Claude Code 使用 GPT-5.5 后端
+## 让 Claude Code 使用 GPT-5.4 后端
 
 Claude Code 发送 Anthropic 格式请求。ferryllm 可以接收这个请求，重写模型名，然后转发给 OpenAI-compatible 后端。
 
@@ -190,6 +190,12 @@ cargo run --bin ferryllm -- serve --config examples/config/codexapis.toml
 ```
 
 更多缓存命中率、cache-key 稳定性和 Claude Code 最佳实践见 [docs/prompt-caching.md](docs/prompt-caching.md)。
+
+## Prompt Cache
+
+在当前 Claude Code + Codex relay 组合下，只要 system prefix 稳定、并且把 transport metadata 从前缀中移走，实测缓存读命中率可以到接近 99.8%。
+
+这个结果依赖上游 provider、prompt 结构和前缀稳定性，不是无条件保证。具体的规则和可调参数见 [docs/prompt-caching.md](docs/prompt-caching.md)。
 
 ## 后续路线
 

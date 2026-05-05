@@ -200,6 +200,10 @@ preserves the message order and does not add volatile fields to OpenAI-compatibl
 upstream request bodies, so provider-side cache hit rates should remain high
 when the upstream relay supports prompt caching.
 
+In the current Claude Code + Codex relay setup, once the volatile system-prefix
+metadata is normalized, the observed cache-read hit rate has reached about
+99.8% on stable prompts.
+
 The cache will not necessarily be shared with direct Anthropic-format requests,
 because ferryllm converts Anthropic client requests into the selected provider's
 native wire format.

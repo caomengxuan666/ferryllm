@@ -63,7 +63,7 @@ curl -s http://127.0.0.1:3000/v1/messages \
   -d '{"model":"cc-gpt55","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}'
 ```
 
-## Claude Code With GPT-5.5
+## Claude Code With GPT-5.4
 
 Claude Code sends Anthropic-format requests. ferryllm can receive those requests, rewrite the model, and forward them to an OpenAI-compatible backend.
 
@@ -193,6 +193,17 @@ See [docs/load-testing.md](docs/load-testing.md).
 - [Deployment](docs/deployment.md)
 - [Load testing](docs/load-testing.md)
 - [Prompt caching and token observability](docs/prompt-caching.md)
+
+## Prompt Cache
+
+With `prompt-observability` enabled, ferryllm exposes prompt-cache usage in
+logs and `/metrics`. In the current Claude Code + Codex relay setup, we have
+observed cache read rates around 99.8% on stable prompts when the system prefix
+is normalized and volatile transport metadata is stripped.
+
+The exact result depends on the upstream provider, prompt shape, and how stable
+the prefix is across requests. See [docs/prompt-caching.md](docs/prompt-caching.md)
+for the cache-key rules and the current tuning knobs.
 
 ## Roadmap
 
