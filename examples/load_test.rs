@@ -13,6 +13,7 @@ use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 struct Args {
+    preset: String,
     url: String,
     protocol: Protocol,
     model: String,
@@ -127,6 +128,7 @@ fn print_summary(args: &Args, elapsed: Duration, samples: &[ResultSample]) {
     let errors = args.requests.saturating_sub(ok);
     let elapsed_secs = elapsed.as_secs_f64();
     println!("{{");
+    println!("  \"preset\": \"{}\",", args.preset);
     println!("  \"url\": \"{}\",", args.url);
     println!("  \"protocol\": \"{}\",", args.protocol.as_str());
     println!("  \"model\": \"{}\",", args.model);
@@ -183,6 +185,7 @@ fn percentile(values: &[f64], pct: f64) -> f64 {
 
 fn parse_args() -> Args {
     let mut args = Args {
+        preset: "custom".into(),
         url: "http://127.0.0.1:3000/v1/messages".into(),
         protocol: Protocol::Anthropic,
         model: "claude-load-test".into(),
@@ -197,6 +200,7 @@ fn parse_args() -> Args {
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
+            "--preset" => apply_preset(&mut args, &iter.next().expect("--preset value")),
             "--url" => args.url = iter.next().expect("--url value"),
             "--protocol" => args.protocol = parse_protocol(&iter.next().expect("--protocol value")),
             "--model" => args.model = iter.next().expect("--model value"),
@@ -215,6 +219,23 @@ fn parse_args() -> Args {
     }
 
     args
+}
+
+fn apply_preset(args: &mut Args, preset: &str) {
+    args.preset = preset.into();
+    match preset {
+        "mock-anthropic" | "anthropic-messages" => {
+            args.protocol = Protocol::Anthropic;
+            args.url = "http://127.0.0.1:3000/v1/messages".into();
+            args.model = "claude-load-test".into();
+        }
+        "mock-openai" | "openai-chat" => {
+            args.protocol = Protocol::Openai;
+            args.url = "http://127.0.0.1:3000/v1/chat/completions".into();
+            args.model = "gpt-load-test".into();
+        }
+        other => panic!("unknown preset {other}"),
+    }
 }
 
 fn parse_next<T: std::str::FromStr>(iter: &mut impl Iterator<Item = String>, name: &str) -> T {
@@ -236,6 +257,9 @@ fn print_help() {
     println!("Usage: load_test [OPTIONS]");
     println!();
     println!("Options:");
+    println!(
+        "  --preset NAME             mock-anthropic|mock-openai|anthropic-messages|openai-chat"
+    );
     println!("  --url URL                 Target URL (default: http://127.0.0.1:3000/v1/messages)");
     println!("  --protocol anthropic|openai  Request body shape (default: anthropic)");
     println!("  --model MODEL             Model name (default: claude-load-test)");

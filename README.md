@@ -127,7 +127,7 @@ src/
 ferryllm ships a benchmark-style load tester similar to `redis-benchmark`.
 
 ```bash
-cargo run --release --example load_test --features http -- --protocol anthropic --requests 10000 --concurrency 512
+cargo run --release --example load_test --features http -- --preset mock-anthropic --requests 10000 --concurrency 512
 ```
 
 It can target either `/v1/messages` or `/v1/chat/completions`, and it is designed to measure your own server and hardware rather than spend tokens on real providers.

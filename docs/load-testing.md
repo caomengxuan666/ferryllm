@@ -28,14 +28,14 @@ The Rust benchmark example is the main tool for load testing:
 
 ```bash
 cargo run --release --example load_test --features http -- \
-  --protocol anthropic \
-  --url http://127.0.0.1:3000/v1/messages \
+  --preset mock-anthropic \
   --requests 10000 \
   --concurrency 512
 ```
 
 Useful flags:
 
+- `--preset mock-anthropic|mock-openai|anthropic-messages|openai-chat`
 - `--protocol anthropic|openai`
 - `--url`
 - `--model`
@@ -50,6 +50,7 @@ Examples:
 
 ```bash
 cargo run --release --example load_test --features http -- --protocol anthropic --requests 1000 --concurrency 128
+cargo run --release --example load_test --features http -- --preset mock-openai --requests 1000 --concurrency 128
 cargo run --release --example load_test --features http -- --protocol openai --url http://127.0.0.1:3000/v1/chat/completions --requests 1000 --concurrency 128
 cargo run --release --example load_test --features http -- --requests 5000 --concurrency 512 --timeout 20
 ```
