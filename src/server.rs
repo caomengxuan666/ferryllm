@@ -132,22 +132,50 @@ async fn openai_chat_handler(
     // Apply model rewrite so the backend sees the correct model name.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
-    info!(request_id = %request_id, entry = "openai", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = route.fallbacks.len(), "resolved route");
+    let fallback_count = route.fallbacks.len();
+    info!(request_id = %request_id, entry = "openai", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = fallback_count, "resolved route");
 
     let response = if stream {
-        handle_openai_stream(&state, route.adapter, ir_req, display_model).await
+        handle_openai_stream(&state, route.adapter, ir_req, display_model.clone()).await
     } else {
         handle_openai_chat(
             &state,
             route.adapter,
             route.fallbacks,
             ir_req,
-            display_model,
+            display_model.clone(),
         )
         .await
     };
     state.metrics.observe_latency(started_at.elapsed());
-    response
+    match response {
+        Ok(response) => {
+            log_access(RequestLog {
+                entry: "openai",
+                request_id: &request_id,
+                model: &display_model,
+                provider: &route.provider,
+                stream,
+                status: StatusCode::OK,
+                latency: started_at.elapsed(),
+                fallback_count,
+            });
+            Ok(response)
+        }
+        Err(err) => {
+            log_access(RequestLog {
+                entry: "openai",
+                request_id: &request_id,
+                model: &display_model,
+                provider: &route.provider,
+                stream,
+                status: err.status,
+                latency: started_at.elapsed(),
+                fallback_count,
+            });
+            Err(err)
+        }
+    }
 }
 
 async fn handle_openai_chat(
@@ -235,22 +263,50 @@ async fn anthropic_messages_handler(
     // Apply model rewrite.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
-    info!(request_id = %request_id, entry = "anthropic", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = route.fallbacks.len(), "resolved route");
+    let fallback_count = route.fallbacks.len();
+    info!(request_id = %request_id, entry = "anthropic", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = fallback_count, "resolved route");
 
     let response = if stream {
-        handle_anthropic_stream(&state, route.adapter, ir_req, display_model).await
+        handle_anthropic_stream(&state, route.adapter, ir_req, display_model.clone()).await
     } else {
         handle_anthropic_chat(
             &state,
             route.adapter,
             route.fallbacks,
             ir_req,
-            display_model,
+            display_model.clone(),
         )
         .await
     };
     state.metrics.observe_latency(started_at.elapsed());
-    response
+    match response {
+        Ok(response) => {
+            log_access(RequestLog {
+                entry: "anthropic",
+                request_id: &request_id,
+                model: &display_model,
+                provider: &route.provider,
+                stream,
+                status: StatusCode::OK,
+                latency: started_at.elapsed(),
+                fallback_count,
+            });
+            Ok(response)
+        }
+        Err(err) => {
+            log_access(RequestLog {
+                entry: "anthropic",
+                request_id: &request_id,
+                model: &display_model,
+                provider: &route.provider,
+                stream,
+                status: err.status,
+                latency: started_at.elapsed(),
+                fallback_count,
+            });
+            Err(err)
+        }
+    }
 }
 
 async fn handle_anthropic_chat(
@@ -305,6 +361,7 @@ async fn chat_with_fallbacks(
     fallbacks: Vec<ResolvedFallback>,
     ir_req: &ir::ChatRequest,
 ) -> Result<ir::ChatResponse, AppError> {
+    info!(provider = %adapter.provider_name(), model = %ir_req.model, fallback_count = fallbacks.len(), "attempting primary upstream request");
     match with_timeout(state, adapter.chat(ir_req)).await {
         Ok(resp) => Ok(resp),
         Err(primary_error) if !fallbacks.is_empty() => {
@@ -322,6 +379,31 @@ async fn chat_with_fallbacks(
         }
         Err(err) => Err(err),
     }
+}
+
+struct RequestLog<'a> {
+    entry: &'a str,
+    request_id: &'a str,
+    model: &'a str,
+    provider: &'a str,
+    stream: bool,
+    status: StatusCode,
+    latency: Duration,
+    fallback_count: usize,
+}
+
+fn log_access(log: RequestLog<'_>) {
+    info!(
+        request_id = %log.request_id,
+        entry = %log.entry,
+        model = %log.model,
+        provider = %log.provider,
+        stream = log.stream,
+        status = %log.status,
+        latency_ms = log.latency.as_millis(),
+        fallback_count = log.fallback_count,
+        "request completed"
+    );
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
