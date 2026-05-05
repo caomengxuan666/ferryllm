@@ -1,4 +1,4 @@
-use std::collections::{hash_map::Entry, HashMap, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -197,7 +197,18 @@ struct OpenAISseChunk {
 
 #[derive(Debug, Default)]
 struct OpenAIToolStreamState {
-    started: HashMap<u32, String>,
+    /// Per-tool-index buffer: (tool_name, tool_id, ordered argument fragments).
+    /// Tool blocks are NOT emitted until finish_reason so that Anthropic
+    /// clients see each content_block_start → delta* → stop atomically
+    /// instead of interleaved tool deltas.
+    tools: HashMap<u32, ToolBlockBuf>,
+}
+
+#[derive(Debug, Default)]
+struct ToolBlockBuf {
+    name: String,
+    id: String,
+    fragments: Vec<String>,
 }
 
 pub struct OpenaiAdapter {
@@ -682,6 +693,7 @@ fn parse_openai_sse_line_events(
             let mut events = Vec::new();
 
             if let Some(d) = choice.delta {
+                // Text deltas: emit immediately for streaming UX.
                 if let Some(text) = d.content.filter(|s| !s.is_empty()) {
                     events.push(StreamEvent::ContentBlockDelta {
                         index,
@@ -689,40 +701,24 @@ fn parse_openai_sse_line_events(
                     });
                 }
 
+                // Tool-call deltas: buffer per tool index instead of
+                // emitting interleaved ContentBlockStart/Delta.  We will
+                // emit complete tool blocks in index order once
+                // finish_reason arrives.
                 for tc in d.tool_calls {
                     let tool_index = tc.index;
-                    if let Entry::Vacant(entry) = tool_state.started.entry(tool_index) {
-                        let id = tc
-                            .id
-                            .clone()
-                            .unwrap_or_else(|| format!("tool_call_{tool_index}"));
-                        let name = tc
-                            .function
-                            .as_ref()
-                            .and_then(|func| func.name.clone())
-                            .unwrap_or_default();
-                        entry.insert(id.clone());
-                        events.push(StreamEvent::ContentBlockStart {
-                            index: tool_index,
-                            content_block: ContentBlock::ToolUse {
-                                id,
-                                name,
-                                input: Value::Object(Default::default()),
-                            },
-                        });
-                    }
+                    let buf = tool_state.tools.entry(tool_index).or_default();
 
-                    if let Some(arguments) = tc
-                        .function
-                        .and_then(|func| func.arguments)
-                        .filter(|arguments| !arguments.is_empty())
-                    {
-                        events.push(StreamEvent::ContentBlockDelta {
-                            index: tool_index,
-                            delta: ContentDelta::InputJSONDelta {
-                                partial_json: arguments,
-                            },
-                        });
+                    if let Some(id) = tc.id.filter(|s| !s.is_empty()) {
+                        buf.id = id;
+                    }
+                    if let Some(func) = &tc.function {
+                        if let Some(name) = func.name.as_ref().filter(|s| !s.is_empty()) {
+                            buf.name = name.clone();
+                        }
+                        if let Some(arg) = func.arguments.as_ref().filter(|s| !s.is_empty()) {
+                            buf.fragments.push(arg.clone());
+                        }
                     }
                 }
             }
@@ -730,10 +726,29 @@ fn parse_openai_sse_line_events(
             if let Some(reason) = &finish_reason {
                 match reason {
                     FinishReason::ToolCalls => {
-                        let mut indices: Vec<u32> = tool_state.started.keys().copied().collect();
+                        // Flush buffered tool blocks in sorted index order,
+                        // each as an atomic Anthropic content block.
+                        let mut indices: Vec<u32> = tool_state.tools.keys().copied().collect();
                         indices.sort_unstable();
-                        for tool_index in indices {
-                            events.push(StreamEvent::ContentBlockStop { index: tool_index });
+                        for ti in indices {
+                            let buf = tool_state.tools.remove(&ti).unwrap_or_default();
+                            events.push(StreamEvent::ContentBlockStart {
+                                index: ti,
+                                content_block: ContentBlock::ToolUse {
+                                    id: buf.id,
+                                    name: buf.name,
+                                    input: Value::Object(Default::default()),
+                                },
+                            });
+                            for fragment in buf.fragments {
+                                events.push(StreamEvent::ContentBlockDelta {
+                                    index: ti,
+                                    delta: ContentDelta::InputJSONDelta {
+                                        partial_json: fragment,
+                                    },
+                                });
+                            }
+                            events.push(StreamEvent::ContentBlockStop { index: ti });
                         }
                         events.push(StreamEvent::MessageDelta {
                             stop_reason: Some("tool_use".into()),
@@ -745,7 +760,6 @@ fn parse_openai_sse_line_events(
                         });
                     }
                     FinishReason::Stop | FinishReason::Length => {
-                        // Text block: emit ContentBlockStop for the current block.
                         events.push(StreamEvent::ContentBlockStop { index });
                         events.push(StreamEvent::MessageDelta {
                             stop_reason: Some("end_turn".into()),
@@ -910,73 +924,68 @@ mod tests {
     }
 
     #[test]
-    fn streaming_tool_call_delta_starts_tool_use_and_streams_arguments() {
+    fn streaming_tool_call_buffered_until_finish_then_emitted_atomically() {
         let mut state = OpenAIToolStreamState::default();
-        let line = r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\""}}]}}]}"#;
 
-        let events = parse_openai_sse_line_events(line, &mut state).expect("parse events");
+        // Text delta is emitted immediately.
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"content":"hello"}}]}"#,
+            &mut state,
+        )
+        .expect("text events");
+        assert_eq!(events.len(), 1);
+        assert!(matches!(events[0], StreamEvent::ContentBlockDelta { .. }));
 
-        assert_eq!(events.len(), 2);
-        match &events[0] {
-            StreamEvent::ContentBlockStart {
-                index,
-                content_block: ContentBlock::ToolUse { id, name, input },
-            } => {
-                assert_eq!(*index, 0);
-                assert_eq!(id, "call_1");
-                assert_eq!(name, "read_file");
-                assert_eq!(input, &json!({}));
-            }
-            other => panic!("expected tool_use start, got {other:?}"),
-        }
-        match &events[1] {
-            StreamEvent::ContentBlockDelta {
-                index,
-                delta: ContentDelta::InputJSONDelta { partial_json },
-            } => {
-                assert_eq!(*index, 0);
-                assert_eq!(partial_json, r#"{"path""#);
-            }
-            other => panic!("expected input json delta, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn streaming_tool_call_delta_continues_arguments_without_restarting_block() {
-        let mut state = OpenAIToolStreamState::default();
+        // Tool deltas are buffered, not emitted.
         parse_openai_sse_line_events(
             r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\""}}]}}]}"#,
             &mut state,
         )
-        .expect("parse initial events");
-
-        let events = parse_openai_sse_line_events(
+        .expect_err("tool delta buffered – no events");
+        parse_openai_sse_line_events(
             r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"Cargo.toml\"}"}}]}}]}"#,
             &mut state,
         )
-        .expect("parse continuation events");
+        .expect_err("tool delta buffered – no events");
 
-        assert_eq!(events.len(), 1);
-        match &events[0] {
-            StreamEvent::ContentBlockDelta {
-                index,
-                delta: ContentDelta::InputJSONDelta { partial_json },
-            } => {
-                assert_eq!(*index, 0);
-                assert_eq!(partial_json, r#":"Cargo.toml"}"#);
-            }
-            other => panic!("expected input json delta, got {other:?}"),
-        }
+        // finish_reason flushes all buffered tool blocks.
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+        )
+        .expect("finish events");
+
+        // Events: ContentBlockStart(tool), ContentBlockDelta(arg1),
+        // ContentBlockDelta(arg2), ContentBlockStop, MessageDelta
+        assert_eq!(events.len(), 5);
+        assert!(matches!(
+            events[0],
+            StreamEvent::ContentBlockStart { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[1],
+            StreamEvent::ContentBlockDelta { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[2],
+            StreamEvent::ContentBlockDelta { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[3],
+            StreamEvent::ContentBlockStop { index: 0 }
+        ));
+        assert!(matches!(events[4], StreamEvent::MessageDelta { .. }));
     }
 
     #[test]
     fn streaming_tool_call_finish_emits_tool_stop_and_message_delta() {
         let mut state = OpenAIToolStreamState::default();
+        // Buffer a tool block.
         parse_openai_sse_line_events(
             r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}"#,
             &mut state,
         )
-        .expect("parse initial events");
+        .expect_err("tool delta buffered");
 
         let events = parse_openai_sse_line_events(
             r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
@@ -984,17 +993,76 @@ mod tests {
         )
         .expect("parse finish events");
 
-        assert_eq!(events.len(), 2);
+        // ContentBlockStart, ContentBlockDelta, ContentBlockStop, MessageDelta
+        assert_eq!(events.len(), 4);
         assert!(matches!(
             events[0],
+            StreamEvent::ContentBlockStart { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[1],
+            StreamEvent::ContentBlockDelta { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[2],
             StreamEvent::ContentBlockStop { index: 0 }
         ));
-        match &events[1] {
+        match &events[3] {
             StreamEvent::MessageDelta { stop_reason, usage } => {
                 assert_eq!(stop_reason.as_deref(), Some("tool_use"));
                 assert!(usage.is_none());
             }
             other => panic!("expected message delta, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn streaming_multiple_tool_blocks_emitted_in_sorted_order() {
+        let mut state = OpenAIToolStreamState::default();
+        parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_b","type":"function","function":{"name":"ls","arguments":"-"}}]}}]}"#,
+            &mut state,
+        )
+        .expect_err("tool delta buffered");
+        parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"pwd","arguments":"-"}}]}}]}"#,
+            &mut state,
+        )
+        .expect_err("tool delta buffered");
+
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+        )
+        .expect("finish events");
+
+        // Tool 0 block first, then tool 1 block, then MessageDelta.
+        // Start(0), Delta(0), Stop(0), Start(1), Delta(1), Stop(1), MessageDelta
+        assert_eq!(events.len(), 7);
+        assert!(matches!(
+            events[0],
+            StreamEvent::ContentBlockStart { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[1],
+            StreamEvent::ContentBlockDelta { index: 0, .. }
+        ));
+        assert!(matches!(
+            events[2],
+            StreamEvent::ContentBlockStop { index: 0 }
+        ));
+        assert!(matches!(
+            events[3],
+            StreamEvent::ContentBlockStart { index: 1, .. }
+        ));
+        assert!(matches!(
+            events[4],
+            StreamEvent::ContentBlockDelta { index: 1, .. }
+        ));
+        assert!(matches!(
+            events[5],
+            StreamEvent::ContentBlockStop { index: 1 }
+        ));
+        assert!(matches!(events[6], StreamEvent::MessageDelta { .. }));
     }
 }
