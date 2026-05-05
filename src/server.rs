@@ -483,10 +483,17 @@ async fn handle_anthropic_stream(
 
     // State carried across stream items.
     use futures::StreamExt;
-    use std::collections::HashSet;
+    use std::collections::{HashMap, HashSet};
     use std::sync::atomic::AtomicBool;
     let mut started_text_blocks: HashSet<u32> = HashSet::new();
     let closing_sent = Arc::new(AtomicBool::new(false));
+
+    // Anthropic requires consecutive content-block indices without gaps or
+    // overlaps. The OpenAI adapter may emit text at choice.index (0) and
+    // tool_use at tool_call.index (also 0), causing a collision.  We remap
+    // every block to a monotonically increasing index.
+    let mut index_remap: HashMap<u32, u32> = HashMap::new();
+    let mut next_output_index: u32 = 0;
 
     let closing_flag = Arc::clone(&closing_sent);
     let sse_stream = combined
@@ -513,22 +520,75 @@ async fn handle_anthropic_stream(
                 }
             };
 
-            // Inject ContentBlockStart before first text delta.
-            if let ir::StreamEvent::ContentBlockDelta {
-                index,
-                delta: ir::ContentDelta::TextDelta { .. },
-            } = &event
-            {
-                if !started_text_blocks.contains(index) {
-                    started_text_blocks.insert(*index);
-                    pending.push(ir::StreamEvent::ContentBlockStart {
-                        index: *index,
-                        content_block: ir::ContentBlock::Text {
-                            text: String::new(),
-                        },
+            // Normalise content-block indices so they are consecutive
+            // starting from 0 and never overlap.
+            let event = match event {
+                ir::StreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ir::ContentDelta::TextDelta { text },
+                } => {
+                    // First text delta for a new block → inject ContentBlockStart.
+                    let output_index = *index_remap.entry(index).or_insert_with(|| {
+                        let next = next_output_index;
+                        next_output_index += 1;
+                        started_text_blocks.insert(index);
+                        pending.push(ir::StreamEvent::ContentBlockStart {
+                            index: next,
+                            content_block: ir::ContentBlock::Text {
+                                text: String::new(),
+                            },
+                        });
+                        next
                     });
+                    ir::StreamEvent::ContentBlockDelta {
+                        index: output_index,
+                        delta: ir::ContentDelta::TextDelta { text },
+                    }
                 }
-            }
+                ir::StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: block @ ir::ContentBlock::ToolUse { .. },
+                } => {
+                    // Tool block about to start – first close any active
+                    // text block that shares the source index.
+                    if let Some(&output_index) = index_remap.get(&index) {
+                        if started_text_blocks.remove(&index) {
+                            pending.push(ir::StreamEvent::ContentBlockStop {
+                                index: output_index,
+                            });
+                        }
+                    }
+                    let output_index = *index_remap.entry(index).or_insert_with(|| {
+                        let next = next_output_index;
+                        next_output_index += 1;
+                        next
+                    });
+                    ir::StreamEvent::ContentBlockStart {
+                        index: output_index,
+                        content_block: block,
+                    }
+                }
+                ir::StreamEvent::ContentBlockDelta {
+                    index,
+                    delta: ir::ContentDelta::InputJSONDelta { partial_json },
+                } => {
+                    let output_index = index_remap
+                        .get(&index)
+                        .copied()
+                        .unwrap_or(next_output_index);
+                    ir::StreamEvent::ContentBlockDelta {
+                        index: output_index,
+                        delta: ir::ContentDelta::InputJSONDelta { partial_json },
+                    }
+                }
+                ir::StreamEvent::ContentBlockStop { index } => {
+                    let output_index = index_remap.get(&index).copied().unwrap_or(index);
+                    ir::StreamEvent::ContentBlockStop {
+                        index: output_index,
+                    }
+                }
+                other => other,
+            };
 
             if let ir::StreamEvent::MessageDelta { .. } | ir::StreamEvent::MessageStop = &event {
                 closing_flag.store(true, Ordering::Relaxed);
@@ -545,8 +605,6 @@ async fn handle_anthropic_stream(
                 })
                 .collect::<Vec<_>>()
         })
-        // .map returns a stream of Vec<Result<Event, Infallible>>.
-        // flat_map with stream::iter flattens each vec into individual items.
         .flat_map(|events: Vec<Result<Event, Infallible>>| futures::stream::iter(events));
 
     // Append MessageStop if the adapter stream ended without one.
