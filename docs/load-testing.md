@@ -21,7 +21,9 @@ cargo run --bin ferryllm -- serve --config examples/config/mock-openai.toml
 
 This starts ferryllm on `127.0.0.1:3000` and routes all models to the mock upstream.
 
-## Run The Load Test
+## Run The Python Load Test
+
+The Python script is dependency-free and useful for quick checks:
 
 ```bash
 python3 scripts/load_test.py --requests 1000 --concurrency 32
@@ -36,7 +38,25 @@ python3 scripts/load_test.py --requests 2000 --concurrency 32
 python3 scripts/load_test.py --requests 5000 --concurrency 128
 ```
 
-The script prints JSON with:
+## Run The Rust Load Test
+
+For higher QPS testing, use the async Rust example:
+
+```bash
+cargo run --release --example load_test --features http -- \
+  --requests 10000 \
+  --concurrency 512
+```
+
+Try higher concurrency levels:
+
+```bash
+cargo run --release --example load_test --features http -- --requests 10000 --concurrency 128
+cargo run --release --example load_test --features http -- --requests 20000 --concurrency 512
+cargo run --release --example load_test --features http -- --requests 50000 --concurrency 1024 --timeout 20
+```
+
+The scripts print JSON-like output with:
 
 - `requests_per_second`
 - status code counts
