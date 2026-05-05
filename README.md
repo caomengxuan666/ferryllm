@@ -73,7 +73,7 @@ Claude Code
   -> ferryllm Anthropic entry
   -> unified IR
   -> route match: claude-
-  -> rewrite backend model: gpt-5.5
+  -> rewrite backend model: gpt-5.4
   -> OpenAI-compatible backend
 ```
 
@@ -129,12 +129,12 @@ api_key_env = "CODX_API_KEY"
 match = "cc-gpt55"
 match_type = "exact"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "claude-"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
 Check a config without starting the server:
@@ -192,6 +192,7 @@ See [docs/load-testing.md](docs/load-testing.md).
 - [Compatibility notes](docs/compatibility.md)
 - [Deployment](docs/deployment.md)
 - [Load testing](docs/load-testing.md)
+- [Prompt caching and token observability](docs/prompt-caching.md)
 
 ## Roadmap
 

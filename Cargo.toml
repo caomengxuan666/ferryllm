@@ -1,6 +1,6 @@
 [package]
 name = "ferryllm"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Universal LLM protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI-compatible backends."
 license = "MIT"
@@ -10,7 +10,7 @@ documentation = "https://docs.rs/ferryllm"
 readme = "README.md"
 keywords = ["llm", "openai", "anthropic", "proxy", "gateway"]
 categories = ["web-programming::http-server", "api-bindings", "command-line-utilities"]
-exclude = [".claude/", ".codex/", ".agents/", "target/"]
+exclude = [".claude/", ".codex/", ".agents/", "target/", "session-export.json"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -25,7 +25,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"]
 async-trait = "0.1"
 thiserror = "2"
 toml = "0.9"
+tiktoken-rs = { version = "0.11", optional = true }
 
 [features]
-default = ["http"]
+default = ["http", "prompt-observability"]
 http = []
+prompt-observability = ["dep:tiktoken-rs"]

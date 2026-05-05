@@ -26,6 +26,32 @@ enabled = false
 [metrics]
 enabled = true
 
+[prompt_cache]
+# LiteLLM-style automatic Anthropic cache breakpoint injection.
+# This preserves client-provided cache_control and adds ephemeral breakpoints
+# on stable system/tools/last user blocks when they are missing.
+auto_inject_anthropic_cache_control = true
+cache_system = true
+cache_tools = true
+cache_last_user_message = true
+# OpenAI-compatible prompt cache routing key. Keep it stable; do not include
+# request-specific conversation text in this value.
+openai_prompt_cache_key = "ferryllm"
+# Optional, if the upstream accepts it.
+# openai_prompt_cache_retention = "24h"
+# Safe long-running diagnostic: logs request structure, lengths, and hashes
+# without logging prompt text or tool-result bodies.
+debug_log_request_shape = true
+# Claude Code may place a volatile line near the beginning of system text.
+# Move the full line intersecting this byte range into a later user context
+# block so stable system instructions remain first for provider prompt caches.
+relocate_system_prefix_range = "0..1"
+# Temporary investigation only: this prints the relocated prompt text.
+# Disable after confirming the moved line.
+log_relocated_system_text = false
+# Strip transport metadata lines from system before forwarding.
+strip_system_line_prefixes = ["x-anthropic-billing-header:"]
+
 [[providers]]
 name = "codexapis"
 type = "openai"
@@ -36,12 +62,12 @@ api_key_env = "CODX_API_KEY"
 match = "cc-gpt55"
 match_type = "exact"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "claude-"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "gpt-"
@@ -54,4 +80,4 @@ provider = "codexapis"
 [[routes]]
 match = "*"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"

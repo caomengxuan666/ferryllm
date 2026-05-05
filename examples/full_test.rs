@@ -25,15 +25,19 @@ fn simple_req(model: &str, prompt: &str) -> ChatRequest {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: prompt.into(),
+                cache_control: None,
             }],
         }],
         system: None,
+        system_cache_control: None,
         temperature: None,
         max_tokens: Some(60),
         stop_sequences: vec![],
         tools: vec![],
         tool_choice: None,
         stream: false,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
         extra: Default::default(),
     }
 }
@@ -52,7 +56,7 @@ macro_rules! test_model {
                     .and_then(|c| c.message.as_ref())
                     .and_then(|m| {
                         m.content.iter().find_map(|b| match b {
-                            ContentBlock::Text { text } if !text.is_empty() => {
+                            ContentBlock::Text { text, .. } if !text.is_empty() => {
                                 Some(text.trim().to_string())
                             }
                             _ => None,
@@ -120,15 +124,19 @@ async fn main() {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: "Count 1 2 3".into(),
+                cache_control: None,
             }],
         }],
         system: None,
+        system_cache_control: None,
         temperature: None,
         max_tokens: Some(40),
         stop_sequences: vec![],
         tools: vec![],
         tool_choice: None,
         stream: true,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
         extra: Default::default(),
     };
 

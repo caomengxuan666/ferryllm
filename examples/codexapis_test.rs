@@ -36,15 +36,19 @@ async fn main() {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: "Say hello in exactly one sentence.".into(),
+                cache_control: None,
             }],
         }],
         system: None,
+        system_cache_control: None,
         temperature: None,
         max_tokens: Some(100),
         stop_sequences: vec![],
         tools: vec![],
         tool_choice: None,
         stream: false,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
         extra: Default::default(),
     };
 
@@ -56,7 +60,7 @@ async fn main() {
                 if let Some(msg) = &c.message {
                     for block in &msg.content {
                         match block {
-                            ContentBlock::Text { text } => println!("  text:   {}", text),
+                            ContentBlock::Text { text, .. } => println!("  text:   {}", text),
                             other => println!("  block:  {:?}", other),
                         }
                     }
@@ -134,15 +138,19 @@ async fn main() {
             role: Role::User,
             content: vec![ContentBlock::Text {
                 text: "Count from 1 to 5, one per line.".into(),
+                cache_control: None,
             }],
         }],
         system: None,
+        system_cache_control: None,
         temperature: None,
         max_tokens: Some(100),
         stop_sequences: vec![],
         tools: vec![],
         tool_choice: None,
         stream: true,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
         extra: Default::default(),
     };
 

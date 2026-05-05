@@ -20,6 +20,8 @@ pub struct Config {
     #[serde(default)]
     pub metrics: MetricsConfig,
     #[serde(default)]
+    pub prompt_cache: PromptCacheConfig,
+    #[serde(default)]
     pub providers: Vec<ProviderConfig>,
     #[serde(default)]
     pub routes: Vec<RouteConfig>,
@@ -85,6 +87,48 @@ impl Default for MetricsConfig {
     fn default() -> Self {
         Self {
             enabled: default_metrics_enabled(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PromptCacheConfig {
+    #[serde(default = "default_prompt_cache_auto_inject_anthropic_cache_control")]
+    pub auto_inject_anthropic_cache_control: bool,
+    #[serde(default = "default_prompt_cache_cache_system")]
+    pub cache_system: bool,
+    #[serde(default = "default_prompt_cache_cache_tools")]
+    pub cache_tools: bool,
+    #[serde(default = "default_prompt_cache_cache_last_user_message")]
+    pub cache_last_user_message: bool,
+    #[serde(default = "default_prompt_cache_openai_prompt_cache_key")]
+    pub openai_prompt_cache_key: String,
+    #[serde(default)]
+    pub openai_prompt_cache_retention: Option<String>,
+    #[serde(default = "default_prompt_cache_debug_log_request_shape")]
+    pub debug_log_request_shape: bool,
+    #[serde(default = "default_prompt_cache_relocate_system_prefix_range")]
+    pub relocate_system_prefix_range: Option<String>,
+    #[serde(default = "default_prompt_cache_log_relocated_system_text")]
+    pub log_relocated_system_text: bool,
+    #[serde(default = "default_prompt_cache_strip_system_line_prefixes")]
+    pub strip_system_line_prefixes: Vec<String>,
+}
+
+impl Default for PromptCacheConfig {
+    fn default() -> Self {
+        Self {
+            auto_inject_anthropic_cache_control:
+                default_prompt_cache_auto_inject_anthropic_cache_control(),
+            cache_system: default_prompt_cache_cache_system(),
+            cache_tools: default_prompt_cache_cache_tools(),
+            cache_last_user_message: default_prompt_cache_cache_last_user_message(),
+            openai_prompt_cache_key: default_prompt_cache_openai_prompt_cache_key(),
+            openai_prompt_cache_retention: None,
+            debug_log_request_shape: default_prompt_cache_debug_log_request_shape(),
+            relocate_system_prefix_range: default_prompt_cache_relocate_system_prefix_range(),
+            log_relocated_system_text: default_prompt_cache_log_relocated_system_text(),
+            strip_system_line_prefixes: default_prompt_cache_strip_system_line_prefixes(),
         }
     }
 }
@@ -263,6 +307,27 @@ impl Config {
             per_key_rate_limit_per_minute: self.auth.per_key_rate_limit_per_minute,
             per_key_max_concurrent_requests: self.auth.per_key_max_concurrent_requests,
             metrics_enabled: self.metrics.enabled,
+            prompt_cache: crate::server::PromptCacheOptions {
+                auto_inject_anthropic_cache_control: self
+                    .prompt_cache
+                    .auto_inject_anthropic_cache_control,
+                cache_system: self.prompt_cache.cache_system,
+                cache_tools: self.prompt_cache.cache_tools,
+                cache_last_user_message: self.prompt_cache.cache_last_user_message,
+                openai_prompt_cache_key: self.prompt_cache.openai_prompt_cache_key.clone(),
+                openai_prompt_cache_retention: self
+                    .prompt_cache
+                    .openai_prompt_cache_retention
+                    .clone(),
+                debug_log_request_shape: self.prompt_cache.debug_log_request_shape,
+                relocate_system_prefix_range: self
+                    .prompt_cache
+                    .relocate_system_prefix_range
+                    .as_deref()
+                    .and_then(parse_byte_range),
+                log_relocated_system_text: self.prompt_cache.log_relocated_system_text,
+                strip_system_line_prefixes: self.prompt_cache.strip_system_line_prefixes.clone(),
+            },
         })
     }
 
@@ -363,6 +428,49 @@ fn default_log_format() -> String {
 
 fn default_metrics_enabled() -> bool {
     true
+}
+
+fn default_prompt_cache_auto_inject_anthropic_cache_control() -> bool {
+    true
+}
+
+fn default_prompt_cache_cache_system() -> bool {
+    true
+}
+
+fn default_prompt_cache_cache_tools() -> bool {
+    true
+}
+
+fn default_prompt_cache_cache_last_user_message() -> bool {
+    true
+}
+
+fn default_prompt_cache_openai_prompt_cache_key() -> String {
+    "ferryllm".into()
+}
+
+fn default_prompt_cache_debug_log_request_shape() -> bool {
+    true
+}
+
+fn default_prompt_cache_relocate_system_prefix_range() -> Option<String> {
+    None
+}
+
+fn default_prompt_cache_log_relocated_system_text() -> bool {
+    false
+}
+
+fn default_prompt_cache_strip_system_line_prefixes() -> Vec<String> {
+    Vec::new()
+}
+
+fn parse_byte_range(value: &str) -> Option<(usize, usize)> {
+    let (start, end) = value.split_once("..")?;
+    let start = start.trim().parse::<usize>().ok()?;
+    let end = end.trim().parse::<usize>().ok()?;
+    (start < end).then_some((start, end))
 }
 
 fn parse_csv(value: &str) -> Vec<String> {

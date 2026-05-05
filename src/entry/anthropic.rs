@@ -38,7 +38,11 @@ pub enum AnthropicSystemText {
 #[serde(tag = "type")]
 pub enum AnthropicSystemPart {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(default)]
+        cache_control: Option<Value>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,14 +62,24 @@ pub enum AnthropicContent {
 #[serde(tag = "type")]
 pub enum AnthropicContentBlock {
     #[serde(rename = "text")]
-    Text { text: String },
+    Text {
+        text: String,
+        #[serde(default)]
+        cache_control: Option<Value>,
+    },
     #[serde(rename = "image")]
-    Image { source: AnthropicImageSource },
+    Image {
+        source: AnthropicImageSource,
+        #[serde(default)]
+        cache_control: Option<Value>,
+    },
     #[serde(rename = "tool_use")]
     ToolUse {
         id: String,
         name: String,
         input: Value,
+        #[serde(default)]
+        cache_control: Option<Value>,
     },
     #[serde(rename = "tool_result")]
     ToolResult {
@@ -73,9 +87,15 @@ pub enum AnthropicContentBlock {
         content: Value, // string or array of blocks
         #[serde(default)]
         is_error: Option<bool>,
+        #[serde(default)]
+        cache_control: Option<Value>,
     },
     #[serde(rename = "thinking")]
-    Thinking { thinking: String },
+    Thinking {
+        thinking: String,
+        #[serde(default)]
+        cache_control: Option<Value>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -92,6 +112,8 @@ pub struct AnthropicTool {
     #[serde(default)]
     pub description: String,
     pub input_schema: Value,
+    #[serde(default)]
+    pub cache_control: Option<Value>,
 }
 
 // --- Serializable response (what we send back to clients) ---
@@ -125,12 +147,17 @@ pub enum AnthropicRespBlock {
 pub struct AnthropicRespUsage {
     pub input_tokens: u32,
     pub output_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_creation_input_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u32>,
 }
 
 // --- Translation: Anthropic → IR ---
 
 pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
     let system = extract_anthropic_system(&req.system);
+    let system_cache_control = extract_anthropic_system_cache_control(&req.system);
 
     let messages: Vec<Message> = req.messages.iter().map(anthropic_message_to_ir).collect();
 
@@ -142,7 +169,8 @@ pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
                 .map(|t| Tool {
                     name: t.name.clone(),
                     description: t.description.clone(),
-                    parameters: t.input_schema.clone(),
+                    parameters: canonical_json(&t.input_schema),
+                    cache_control: t.cache_control.clone(),
                 })
                 .collect()
         })
@@ -157,12 +185,15 @@ pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
         model: req.model.clone(),
         messages,
         system,
+        system_cache_control,
         temperature: req.temperature,
         max_tokens: Some(req.max_tokens),
         stop_sequences: req.stop_sequences.clone(),
         tools,
         tool_choice,
         stream: req.stream,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
         extra: Default::default(),
     }
 }
@@ -174,7 +205,7 @@ fn extract_anthropic_system(system: &Option<AnthropicSystemText>) -> Option<Stri
             let text: String = parts
                 .iter()
                 .map(|p| match p {
-                    AnthropicSystemPart::Text { text } => text.as_str(),
+                    AnthropicSystemPart::Text { text, .. } => text.as_str(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
@@ -185,6 +216,15 @@ fn extract_anthropic_system(system: &Option<AnthropicSystemText>) -> Option<Stri
             }
         }
         None => None,
+    }
+}
+
+fn extract_anthropic_system_cache_control(system: &Option<AnthropicSystemText>) -> Option<Value> {
+    match system {
+        Some(AnthropicSystemText::Array(parts)) => parts.iter().rev().find_map(|p| match p {
+            AnthropicSystemPart::Text { cache_control, .. } => cache_control.clone(),
+        }),
+        _ => None,
     }
 }
 
@@ -202,27 +242,47 @@ fn anthropic_message_to_ir(msg: &AnthropicMessage) -> Message {
 fn anthropic_content_to_blocks(content: &AnthropicContent) -> Vec<ContentBlock> {
     match content {
         AnthropicContent::Text(text) => {
-            vec![ContentBlock::Text { text: text.clone() }]
+            vec![ContentBlock::Text {
+                text: text.clone(),
+                cache_control: None,
+            }]
         }
         AnthropicContent::Blocks(blocks) => blocks
             .iter()
             .map(|b| match b {
-                AnthropicContentBlock::Text { text } => ContentBlock::Text { text: text.clone() },
-                AnthropicContentBlock::Image { source } => ContentBlock::Image {
+                AnthropicContentBlock::Text {
+                    text,
+                    cache_control,
+                } => ContentBlock::Text {
+                    text: text.clone(),
+                    cache_control: cache_control.clone(),
+                },
+                AnthropicContentBlock::Image {
+                    source,
+                    cache_control,
+                } => ContentBlock::Image {
                     source: ImageSource::Base64 {
                         data: source.data.clone(),
                     },
                     media_type: source.media_type.clone(),
+                    cache_control: cache_control.clone(),
                 },
-                AnthropicContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                AnthropicContentBlock::ToolUse {
+                    id,
+                    name,
+                    input,
+                    cache_control,
+                } => ContentBlock::ToolUse {
                     id: id.clone(),
                     name: name.clone(),
-                    input: input.clone(),
+                    input: canonical_json(input),
+                    cache_control: cache_control.clone(),
                 },
                 AnthropicContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
+                    cache_control,
                 } => {
                     let text = match content {
                         Value::String(s) => s.clone(),
@@ -237,10 +297,15 @@ fn anthropic_content_to_blocks(content: &AnthropicContent) -> Vec<ContentBlock> 
                         id: tool_use_id.clone(),
                         content: text,
                         is_error: is_error.unwrap_or(false),
+                        cache_control: cache_control.clone(),
                     }
                 }
-                AnthropicContentBlock::Thinking { thinking } => ContentBlock::Thinking {
+                AnthropicContentBlock::Thinking {
+                    thinking,
+                    cache_control,
+                } => ContentBlock::Thinking {
                     thinking: thinking.clone(),
+                    cache_control: cache_control.clone(),
                 },
             })
             .collect(),
@@ -287,16 +352,16 @@ pub fn ir_to_anthropic_response(ir: ChatResponse) -> AnthropicMessageResponse {
             m.content
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::Text { text } => {
+                    ContentBlock::Text { text, .. } => {
                         Some(AnthropicRespBlock::Text { text: text.clone() })
                     }
-                    ContentBlock::ToolUse { id, name, input } => {
-                        Some(AnthropicRespBlock::ToolUse {
-                            id: id.clone(),
-                            name: name.clone(),
-                            input: input.clone(),
-                        })
-                    }
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    } => Some(AnthropicRespBlock::ToolUse {
+                        id: id.clone(),
+                        name: name.clone(),
+                        input: canonical_json(input),
+                    }),
                     _ => None,
                 })
                 .collect()
@@ -322,6 +387,8 @@ pub fn ir_to_anthropic_response(ir: ChatResponse) -> AnthropicMessageResponse {
         usage: AnthropicRespUsage {
             input_tokens: ir.usage.prompt_tokens,
             output_tokens: ir.usage.completion_tokens,
+            cache_creation_input_tokens: ir.usage.cache_creation_input_tokens,
+            cache_read_input_tokens: ir.usage.cache_read_input_tokens.or(ir.usage.cached_tokens),
         },
     }
 }
@@ -445,14 +512,16 @@ fn content_block_to_anthropic_sse(
 ) -> (&'static str, serde_json::Map<String, Value>) {
     let mut map = serde_json::Map::new();
     match block {
-        ContentBlock::Text { text } => {
+        ContentBlock::Text { text, .. } => {
             map.insert("text".into(), Value::String(text.clone()));
             ("text", map)
         }
-        ContentBlock::ToolUse { id, name, input } => {
+        ContentBlock::ToolUse {
+            id, name, input, ..
+        } => {
             map.insert("id".into(), Value::String(id.clone()));
             map.insert("name".into(), Value::String(name.clone()));
-            map.insert("input".into(), input.clone());
+            map.insert("input".into(), canonical_json(input));
             ("tool_use", map)
         }
         _ => {
@@ -506,7 +575,9 @@ mod tests {
         assert_eq!(ir.messages[1].role, Role::User);
 
         match &ir.messages[0].content[0] {
-            ContentBlock::ToolUse { id, name, input } => {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
                 assert_eq!(id, "toolu_abc");
                 assert_eq!(name, "read_file");
                 assert_eq!(input, &json!({"path": "Cargo.toml"}));
@@ -519,12 +590,64 @@ mod tests {
                 id,
                 content,
                 is_error,
+                ..
             } => {
                 assert_eq!(id, "toolu_abc");
                 assert_eq!(content, "file contents");
                 assert!(!is_error);
             }
             other => panic!("expected tool result, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn anthropic_cache_control_preserved_in_ir() {
+        let raw = json!({
+            "model": "claude-sonnet-4-5",
+            "max_tokens": 128,
+            "system": [
+                {
+                    "type": "text",
+                    "text": "stable system",
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "tools": [
+                {
+                    "name": "read_file",
+                    "description": "read files",
+                    "input_schema": {"type": "object"},
+                    "cache_control": {"type": "ephemeral"}
+                }
+            ],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": "stable prefix",
+                            "cache_control": {"type": "ephemeral"}
+                        }
+                    ]
+                }
+            ]
+        });
+
+        let request: AnthropicMessageRequest = serde_json::from_value(raw).expect("parse request");
+        let ir = anthropic_to_ir(&request);
+
+        assert_eq!(ir.system.as_deref(), Some("stable system"));
+        assert_eq!(ir.system_cache_control, Some(json!({"type": "ephemeral"})));
+        assert_eq!(
+            ir.tools[0].cache_control,
+            Some(json!({"type": "ephemeral"}))
+        );
+        match &ir.messages[0].content[0] {
+            ContentBlock::Text { cache_control, .. } => {
+                assert_eq!(cache_control, &Some(json!({"type": "ephemeral"})));
+            }
+            other => panic!("expected text block, got {other:?}"),
         }
     }
 }

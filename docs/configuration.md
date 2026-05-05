@@ -285,6 +285,37 @@ x-api-key: key-one
 
 Per-key limits are optional and only apply when authentication is enabled. They are tracked in-memory per server process and keyed by a hash of the authenticated API key, not by the raw key string.
 
+## Prompt Cache
+
+```toml
+[prompt_cache]
+auto_inject_anthropic_cache_control = true
+cache_system = true
+cache_tools = true
+cache_last_user_message = true
+openai_prompt_cache_key = "ferryllm"
+# openai_prompt_cache_retention = "24h"
+debug_log_request_shape = true
+# relocate_system_prefix_range = "64..128"
+# log_relocated_system_text = false
+# strip_system_line_prefixes = ["x-anthropic-billing-header:"]
+```
+
+Fields:
+
+- `auto_inject_anthropic_cache_control`: Preserve explicit Anthropic `cache_control`, and when missing, inject `{"type":"ephemeral"}` on stable cache breakpoints.
+- `cache_system`: Add a breakpoint to top-level Anthropic system text.
+- `cache_tools`: Add a breakpoint to the last Anthropic tool definition.
+- `cache_last_user_message`: Add a breakpoint to the last cacheable block in the latest user message.
+- `openai_prompt_cache_key`: Stable, low-cardinality key sent to OpenAI-compatible backends when supported.
+- `openai_prompt_cache_retention`: Optional retention hint sent to OpenAI-compatible backends when supported.
+- `debug_log_request_shape`: Log outbound request structure, lengths, and stable hashes without logging prompt text. Keep this enabled when diagnosing provider-side prompt cache misses.
+- `relocate_system_prefix_range`: Optional `start..end` byte range. ferryllm moves the full system line intersecting this range into a user context block at the end of the message list, preserving the text while keeping stable prompt content first for provider prompt caches.
+- `log_relocated_system_text`: Print the relocated text verbatim for diagnosis. This can expose prompt content; keep it disabled outside short investigations.
+- `strip_system_line_prefixes`: Remove system lines that start with one of these prefixes and append them to trailing user context messages. Use this for transport metadata or other non-semantic boilerplate that should not affect cache prefix stability.
+
+This follows LiteLLM-style prompt caching practice: cache stable prefixes, do not mark every block, and avoid injecting Anthropic-only metadata into OpenAI-compatible outbound requests.
+
 ## Metrics
 
 ```toml

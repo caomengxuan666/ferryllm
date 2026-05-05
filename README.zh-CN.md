@@ -73,7 +73,7 @@ Claude Code
   -> ferryllm Anthropic entry
   -> unified IR
   -> route match: claude-
-  -> rewrite backend model: gpt-5.5
+  -> rewrite backend model: gpt-5.4
   -> OpenAI-compatible backend
 ```
 
@@ -129,12 +129,12 @@ api_key_env = "CODX_API_KEY"
 match = "cc-gpt55"
 match_type = "exact"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "claude-"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
 检查配置：
@@ -180,6 +180,16 @@ cargo run --release --example load_test --features http -- \
 ```
 
 更多信息见 [docs/load-testing.md](docs/load-testing.md)。
+
+## Prompt Cache 观测
+
+默认构建会开启 `prompt-observability`，ferryllm 会估算本地 prompt token，并把上游返回的 cache 命中字段写入日志和 `/metrics`：
+
+```bash
+cargo run --bin ferryllm -- serve --config examples/config/codexapis.toml
+```
+
+更多缓存命中率、cache-key 稳定性和 Claude Code 最佳实践见 [docs/prompt-caching.md](docs/prompt-caching.md)。
 
 ## 后续路线
 

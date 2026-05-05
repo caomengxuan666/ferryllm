@@ -1,10 +1,10 @@
 # Claude Code Setup
 
-This document explains how to use Claude Code as an Anthropic-compatible client while sending the actual upstream request to an OpenAI-compatible backend model such as `gpt-5.5`.
+This document explains how to use Claude Code as an Anthropic-compatible client while sending the actual upstream request to an OpenAI-compatible backend model such as `gpt-5.4`.
 
 ## Key Idea
 
-Claude Code does not need to know about `gpt-5.5` directly.
+Claude Code does not need to know about `gpt-5.4` directly.
 
 Claude Code sends Anthropic-format requests to ferryllm. ferryllm receives the request at `/v1/messages`, translates it into the internal representation, rewrites the backend model, and forwards the request to an OpenAI-compatible provider.
 
@@ -14,7 +14,7 @@ Claude Code
   -> ferryllm /v1/messages
   -> model route/rewrite
   -> OpenAI-compatible backend
-  -> backend model gpt-5.5
+  -> backend model gpt-5.4
 ```
 
 ## Verified Behavior
@@ -31,11 +31,11 @@ Observed server logs:
 
 ```text
 incoming request entry="anthropic" model=claude-opus-4-6 stream=false
-resolved route entry="anthropic" display_model=claude-opus-4-6 backend_model=gpt-5.5 provider="openai"
-sending chat request provider="openai" model=gpt-5.5 stream=false
+resolved route entry="anthropic" display_model=claude-opus-4-6 backend_model=gpt-5.4 provider="openai"
+sending chat request provider="openai" model=gpt-5.4 stream=false
 ```
 
-This proves that Claude Code is still the client, but the upstream inference model is `gpt-5.5`.
+This proves that Claude Code is still the client, but the upstream inference model is `gpt-5.4`.
 
 ## Config-Driven Server
 
@@ -78,7 +78,7 @@ Then configure Claude Code to use ferryllm as its Anthropic-compatible API endpo
 claude
 ```
 
-Claude Code will still send Anthropic-format requests, but ferryllm will rewrite the backend model to `gpt-5.5` according to the configured routes.
+Claude Code will still send Anthropic-format requests, but ferryllm will rewrite the backend model to `gpt-5.4` according to the configured routes.
 
 ## Claude Code Settings
 
@@ -106,7 +106,7 @@ Equivalent `~/.claude/settings.json`:
 }
 ```
 
-The model names above are client-side Anthropic model names. ferryllm rewrites them to the configured backend model, such as `gpt-5.5`.
+The model names above are client-side Anthropic model names. ferryllm rewrites them to the configured backend model, such as `gpt-5.4`.
 
 ## cc-switch Setup
 
@@ -146,8 +146,8 @@ Expected ferryllm logs:
 
 ```text
 incoming request entry="anthropic" model=claude-opus-4-6
-resolved route entry="anthropic" display_model=claude-opus-4-6 backend_model=gpt-5.5 provider="openai"
-sending streaming request provider="openai" model=gpt-5.5
+resolved route entry="anthropic" display_model=claude-opus-4-6 backend_model=gpt-5.4 provider="openai"
+sending streaming request provider="openai" model=gpt-5.4
 ```
 
 If Claude Code says `Not logged in`, verify that cc-switch has written the provider environment into Claude Code settings and that `ANTHROPIC_BASE_URL` points to ferryllm.
@@ -172,10 +172,10 @@ The example server uses route rules equivalent to:
 ```text
 if incoming model starts with "claude-":
   provider = openai
-  backend model = gpt-5.5
+  backend model = gpt-5.4
 ```
 
-Therefore, Claude Code may send `claude-opus-4-6`, `claude-haiku-4-5-20251001`, or another Anthropic model name, but the upstream request can still use `gpt-5.5`.
+Therefore, Claude Code may send `claude-opus-4-6`, `claude-haiku-4-5-20251001`, or another Anthropic model name, but the upstream request can still use `gpt-5.4`.
 
 ## Recommended Production Setup
 
@@ -198,7 +198,7 @@ api_key_env = "CODX_API_KEY"
 [[routes]]
 match = "claude-"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
 Users can also define their own exact aliases:
@@ -208,10 +208,10 @@ Users can also define their own exact aliases:
 match = "cc-gpt55"
 match_type = "exact"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
-This lets clients request `cc-gpt55` while ferryllm sends `gpt-5.5` upstream.
+This lets clients request `cc-gpt55` while ferryllm sends `gpt-5.4` upstream.
 
 Then point Claude Code to ferryllm:
 

@@ -21,6 +21,7 @@ pub mod config;
 pub mod entry;
 pub mod ir;
 pub mod router;
+pub mod token_observability;
 
 #[cfg(feature = "http")]
 pub mod server;

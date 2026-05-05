@@ -148,6 +148,13 @@ pub struct OpenAIUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct OpenAIPromptTokensDetails {
+    pub cached_tokens: u32,
 }
 
 // --- SSE chunk (for streaming responses to the client) ---
@@ -184,7 +191,8 @@ pub fn openai_to_ir(req: &OpenAIChatRequest) -> ChatRequest {
                 .map(|t| Tool {
                     name: t.function.name.clone(),
                     description: t.function.description.clone(),
-                    parameters: t.function.parameters.clone(),
+                    parameters: canonical_json(&t.function.parameters),
+                    cache_control: None,
                 })
                 .collect()
         })
@@ -205,12 +213,15 @@ pub fn openai_to_ir(req: &OpenAIChatRequest) -> ChatRequest {
         model: req.model.clone(),
         messages,
         system,
+        system_cache_control: None,
         temperature: req.temperature,
         max_tokens: req.max_tokens,
         stop_sequences,
         tools,
         tool_choice,
         stream: req.stream,
+        prompt_cache_key: None,
+        prompt_cache_retention: None,
         extra: Default::default(),
     }
 }
@@ -253,7 +264,10 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
     if let Some(content) = &msg.content {
         match content {
             Value::String(text) if !text.is_empty() => {
-                blocks.push(ContentBlock::Text { text: text.clone() });
+                blocks.push(ContentBlock::Text {
+                    text: text.clone(),
+                    cache_control: None,
+                });
             }
             Value::Array(parts) => {
                 for part in parts {
@@ -263,6 +277,7 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
                                 if let Some(text) = part.get("text").and_then(|t| t.as_str()) {
                                     blocks.push(ContentBlock::Text {
                                         text: text.to_string(),
+                                        cache_control: None,
                                     });
                                 }
                             }
@@ -275,6 +290,7 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
                                                 url: url.to_string(),
                                             },
                                             media_type: "image/png".to_string(),
+                                            cache_control: None,
                                         });
                                     }
                                 }
@@ -298,7 +314,8 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
             blocks.push(ContentBlock::ToolUse {
                 id: tc.id.clone(),
                 name: tc.function.name.clone(),
-                input,
+                input: canonical_json(&input),
+                cache_control: None,
             });
         }
     }
@@ -309,7 +326,7 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
             let text = blocks
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(text.clone()),
+                    ContentBlock::Text { text, .. } => Some(text.clone()),
                     _ => None,
                 })
                 .collect::<Vec<_>>()
@@ -319,6 +336,7 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
                 id: tool_call_id.clone(),
                 content: text,
                 is_error: false,
+                cache_control: None,
             });
         }
     }
@@ -326,6 +344,7 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
     if blocks.is_empty() {
         blocks.push(ContentBlock::Text {
             text: String::new(),
+            cache_control: None,
         });
     }
 
@@ -399,6 +418,10 @@ pub fn ir_to_openai_response(ir: ChatResponse) -> OpenAIChatResponse {
             prompt_tokens: ir.usage.prompt_tokens,
             completion_tokens: ir.usage.completion_tokens,
             total_tokens: ir.usage.total_tokens,
+            prompt_tokens_details: ir
+                .usage
+                .cached_tokens
+                .map(|cached_tokens| OpenAIPromptTokensDetails { cached_tokens }),
         },
     }
 }
@@ -409,14 +432,16 @@ fn ir_message_to_openai_resp(msg: &Message) -> (String, Vec<OpenAIToolCallResp>)
 
     for block in &msg.content {
         match block {
-            ContentBlock::Text { text: t } => text.push_str(t),
-            ContentBlock::ToolUse { id, name, input } => {
+            ContentBlock::Text { text: t, .. } => text.push_str(t),
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
                 tool_calls.push(OpenAIToolCallResp {
                     id: id.clone(),
                     ty: "function".into(),
                     function: OpenAIFunctionCallResp {
                         name: name.clone(),
-                        arguments: serde_json::to_string(input).unwrap_or_default(),
+                        arguments: canonical_json_string(input),
                     },
                 });
             }
@@ -514,6 +539,9 @@ pub fn ir_to_openai_sse(event: StreamEvent, message_id: &str, model: &str) -> Op
                     prompt_tokens: u.prompt_tokens,
                     completion_tokens: u.completion_tokens,
                     total_tokens: u.total_tokens,
+                    prompt_tokens_details: u
+                        .cached_tokens
+                        .map(|cached_tokens| OpenAIPromptTokensDetails { cached_tokens }),
                 }),
             };
             Some(format!(

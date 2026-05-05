@@ -9,12 +9,21 @@ use serde_json::Value;
 
 use crate::adapter::{Adapter, AdapterError};
 use crate::ir::*;
+use crate::token_observability::{
+    push_summary_field, request_shape_debug_enabled, stable_hash_hex, summarize_flag,
+    summarize_optional_text, summarize_text, summarize_text_windows_detailed,
+    REQUEST_SHAPE_SYSTEM_WINDOW_BYTES, REQUEST_SHAPE_SYSTEM_WINDOW_MAX,
+};
 use tracing::{debug, error, info, trace, warn};
 
 /// OpenAI-native request body (matches their `/v1/chat/completions` schema).
 #[derive(Debug, Serialize)]
 struct OpenAIChatRequest {
     model: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    tools: Vec<OpenAITool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    tool_choice: Option<OpenAIToolChoice>,
     messages: Vec<OpenAIMessage>,
     #[serde(skip_serializing_if = "Option::is_none")]
     temperature: Option<f32>,
@@ -22,12 +31,19 @@ struct OpenAIChatRequest {
     max_tokens: Option<u32>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     stop: Vec<String>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    tools: Vec<OpenAITool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    tool_choice: Option<OpenAIToolChoice>,
+    prompt_cache_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_cache_retention: Option<String>,
     #[serde(default)]
     stream: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    stream_options: Option<OpenAIStreamOptions>,
+}
+
+#[derive(Debug, Serialize)]
+struct OpenAIStreamOptions {
+    include_usage: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +197,12 @@ struct OpenAIUsage {
     prompt_tokens: u32,
     completion_tokens: u32,
     total_tokens: u32,
+    prompt_tokens_details: Option<OpenAIPromptTokensDetails>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAIPromptTokensDetails {
+    cached_tokens: Option<u32>,
 }
 
 // --- SSE chunk ---
@@ -299,7 +321,7 @@ fn ir_to_openai_request(req: &ChatRequest) -> OpenAIChatRequest {
             function: OpenAIFunction {
                 name: t.name.clone(),
                 description: t.description.clone(),
-                parameters: t.parameters.clone(),
+                parameters: canonical_json(&t.parameters),
             },
         })
         .collect();
@@ -322,7 +344,12 @@ fn ir_to_openai_request(req: &ChatRequest) -> OpenAIChatRequest {
         stop: req.stop_sequences.clone(),
         tools,
         tool_choice,
+        prompt_cache_key: req.prompt_cache_key.clone(),
+        prompt_cache_retention: req.prompt_cache_retention.clone(),
         stream: req.stream,
+        stream_options: req.stream.then_some(OpenAIStreamOptions {
+            include_usage: true,
+        }),
     }
 }
 
@@ -403,12 +430,14 @@ fn blocks_to_openai(
         let tool_calls: Vec<OpenAIToolCall> = blocks
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::ToolUse { id, name, input } => Some(OpenAIToolCall {
+                ContentBlock::ToolUse {
+                    id, name, input, ..
+                } => Some(OpenAIToolCall {
                     id: id.clone(),
                     ty: "function".into(),
                     function: OpenAIFunctionCall {
                         name: name.clone(),
-                        arguments: serde_json::to_string(input).unwrap_or_default(),
+                        arguments: canonical_json_string(input),
                     },
                 }),
                 _ => None,
@@ -423,7 +452,7 @@ fn blocks_to_openai(
     });
 
     if text_only {
-        if let ContentBlock::Text { text } = &blocks[0] {
+        if let ContentBlock::Text { text, .. } = &blocks[0] {
             return (OpenAIContent::Text(text.clone()), None, tool_call_id);
         }
     }
@@ -432,8 +461,12 @@ fn blocks_to_openai(
         let parts: Vec<OpenAIContentPart> = blocks
             .iter()
             .filter_map(|b| match b {
-                ContentBlock::Text { text } => Some(OpenAIContentPart::Text { text: text.clone() }),
-                ContentBlock::Image { source, media_type } => {
+                ContentBlock::Text { text, .. } => {
+                    Some(OpenAIContentPart::Text { text: text.clone() })
+                }
+                ContentBlock::Image {
+                    source, media_type, ..
+                } => {
                     let url = match source {
                         ImageSource::Base64 { data } => {
                             format!("data:{};base64,{}", media_type, data)
@@ -486,14 +519,7 @@ fn openai_response_to_ir(resp: OpenAIResponse) -> ChatResponse {
         })
         .collect();
 
-    let usage = resp
-        .usage
-        .map(|u| Usage {
-            prompt_tokens: u.prompt_tokens,
-            completion_tokens: u.completion_tokens,
-            total_tokens: u.total_tokens,
-        })
-        .unwrap_or_default();
+    let usage = resp.usage.map(openai_usage_to_ir).unwrap_or_default();
 
     ChatResponse {
         id: resp.id,
@@ -503,12 +529,30 @@ fn openai_response_to_ir(resp: OpenAIResponse) -> ChatResponse {
     }
 }
 
+fn openai_usage_to_ir(u: OpenAIUsage) -> Usage {
+    let cached_tokens = u
+        .prompt_tokens_details
+        .as_ref()
+        .and_then(|details| details.cached_tokens);
+    Usage {
+        prompt_tokens: u.prompt_tokens,
+        completion_tokens: u.completion_tokens,
+        total_tokens: u.total_tokens,
+        cached_tokens,
+        cache_creation_input_tokens: None,
+        cache_read_input_tokens: cached_tokens,
+    }
+}
+
 fn openai_message_to_blocks(msg: &OpenAIRespMessage) -> Vec<ContentBlock> {
     let mut blocks = Vec::new();
 
     if let Some(text) = &msg.content {
         if !text.is_empty() {
-            blocks.push(ContentBlock::Text { text: text.clone() });
+            blocks.push(ContentBlock::Text {
+                text: text.clone(),
+                cache_control: None,
+            });
         }
     }
 
@@ -517,13 +561,15 @@ fn openai_message_to_blocks(msg: &OpenAIRespMessage) -> Vec<ContentBlock> {
         blocks.push(ContentBlock::ToolUse {
             id: tc.id.clone(),
             name: tc.function.name.clone(),
-            input,
+            input: canonical_json(&input),
+            cache_control: None,
         });
     }
 
     if blocks.is_empty() {
         blocks.push(ContentBlock::Text {
             text: String::new(),
+            cache_control: None,
         });
     }
 
@@ -551,7 +597,13 @@ fn parse_finish_reason(s: &str) -> FinishReason {
 }
 
 fn summarize_openai_request(req: &OpenAIChatRequest) -> String {
-    let mut summary = format!("model={}, stream={}, messages=[", req.model, req.stream);
+    let mut summary = format!(
+        "model={}, stream={}, tools={}, prompt_cache_key={}, messages=[",
+        req.model,
+        req.stream,
+        req.tools.len(),
+        req.prompt_cache_key.as_deref().unwrap_or("-")
+    );
     for (index, msg) in req.messages.iter().enumerate() {
         if index > 0 {
             summary.push_str(", ");
@@ -581,6 +633,125 @@ fn summarize_openai_request(req: &OpenAIChatRequest) -> String {
     summary
 }
 
+fn summarize_openai_request_shape(req: &OpenAIChatRequest) -> String {
+    let serialized = serde_json::to_string(req).unwrap_or_default();
+    let tools_json = serde_json::to_string(&req.tools).unwrap_or_default();
+    let mut summary = String::new();
+    push_summary_field(&mut summary, "model", &req.model);
+    push_summary_field(&mut summary, "stream", summarize_flag(req.stream));
+    push_summary_field(
+        &mut summary,
+        "include_usage",
+        summarize_flag(
+            req.stream_options
+                .as_ref()
+                .is_some_and(|opts| opts.include_usage),
+        ),
+    );
+    push_summary_field(&mut summary, "messages", req.messages.len().to_string());
+    push_summary_field(&mut summary, "tools", req.tools.len().to_string());
+    push_summary_field(&mut summary, "tools_hash", stable_hash_hex(&tools_json));
+    push_summary_field(
+        &mut summary,
+        "tool_choice",
+        summarize_optional_tool_choice(&req.tool_choice),
+    );
+    push_summary_field(
+        &mut summary,
+        "prompt_cache_key",
+        summarize_optional_text(req.prompt_cache_key.as_deref()),
+    );
+    push_summary_field(
+        &mut summary,
+        "prompt_cache_retention",
+        req.prompt_cache_retention.as_deref().unwrap_or("-"),
+    );
+    push_summary_field(&mut summary, "body_hash", stable_hash_hex(&serialized));
+    summary.push_str("message_shapes=[");
+    for (index, msg) in req.messages.iter().enumerate() {
+        if index > 0 {
+            summary.push_str("; ");
+        }
+        summary.push_str(&summarize_openai_message_shape(index, msg));
+    }
+    summary.push(']');
+    summary
+}
+
+fn summarize_optional_tool_choice(tool_choice: &Option<OpenAIToolChoice>) -> String {
+    match tool_choice {
+        Some(choice) => serde_json::to_string(choice)
+            .map(|json| summarize_text(&json))
+            .unwrap_or_else(|_| "present".into()),
+        None => "-".into(),
+    }
+}
+
+fn summarize_openai_message_shape(index: usize, msg: &OpenAIMessage) -> String {
+    let content = match &msg.content {
+        OpenAIContent::Text(text) => {
+            if msg.role == "system" {
+                format!(
+                    "text({};windows={})",
+                    summarize_text(text),
+                    summarize_text_windows_detailed(
+                        text,
+                        REQUEST_SHAPE_SYSTEM_WINDOW_BYTES,
+                        REQUEST_SHAPE_SYSTEM_WINDOW_MAX,
+                        64,
+                        8,
+                    )
+                )
+            } else {
+                format!("text({})", summarize_text(text))
+            }
+        }
+        OpenAIContent::MultiPart(parts) => {
+            let mut part_shapes = Vec::with_capacity(parts.len());
+            for part in parts {
+                part_shapes.push(match part {
+                    OpenAIContentPart::Text { text } => {
+                        format!("text({})", summarize_text(text))
+                    }
+                    OpenAIContentPart::ImageUrl { image_url } => {
+                        format!("image_url({})", summarize_text(&image_url.url))
+                    }
+                });
+            }
+            format!(
+                "multipart(parts={},[{}])",
+                parts.len(),
+                part_shapes.join("|")
+            )
+        }
+    };
+    let tool_calls = msg
+        .tool_calls
+        .as_ref()
+        .map(|calls| {
+            calls
+                .iter()
+                .map(|call| {
+                    format!(
+                        "{}:{}:{}",
+                        call.id,
+                        call.function.name,
+                        summarize_text(&call.function.arguments)
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join("|")
+        })
+        .unwrap_or_else(|| "-".into());
+    format!(
+        "#{index}:role={},content={},tool_calls={},tool_call_id={}",
+        msg.role,
+        content,
+        tool_calls,
+        msg.tool_call_id.as_deref().unwrap_or("-")
+    )
+}
+
 // --- Adapter implementation ---
 
 #[async_trait]
@@ -600,6 +771,13 @@ impl Adapter for OpenaiAdapter {
         info!(provider = "openai", model = %request.model, stream = request.stream, "sending chat request");
         trace!(provider = "openai", url = %url, body_model = %native.model, "openai request prepared");
         trace!(provider = "openai", request = %summarize_openai_request(&native), "openai outbound request");
+        if request_shape_debug_enabled(request) {
+            info!(
+                provider = "openai",
+                request_shape = %summarize_openai_request_shape(&native),
+                "openai outbound request shape"
+            );
+        }
 
         let resp = self
             .client
@@ -640,6 +818,13 @@ impl Adapter for OpenaiAdapter {
         let url = format!("{}/v1/chat/completions", self.base_url);
         info!(provider = "openai", model = %request.model, stream = true, "sending streaming request");
         trace!(provider = "openai", request = %summarize_openai_request(&native), "openai outbound streaming request");
+        if request_shape_debug_enabled(request) {
+            info!(
+                provider = "openai",
+                request_shape = %summarize_openai_request_shape(&native),
+                "openai outbound streaming request shape"
+            );
+        }
 
         let resp = self
             .client
@@ -730,6 +915,15 @@ fn parse_openai_sse_line_events(
     let chunk: OpenAISseChunk = serde_json::from_str(json_str)
         .map_err(|e| AdapterError::TranslationError(format!("failed to parse SSE chunk: {e}")))?;
 
+    if chunk.choices.as_ref().is_none_or(Vec::is_empty) {
+        if let Some(usage) = chunk.usage {
+            return Ok(vec![StreamEvent::MessageDelta {
+                stop_reason: None,
+                usage: Some(openai_usage_to_ir(usage)),
+            }]);
+        }
+    }
+
     if let Some(choices) = chunk.choices {
         if let Some(choice) = choices.into_iter().next() {
             let index = choice.index;
@@ -783,6 +977,7 @@ fn parse_openai_sse_line_events(
                                     id: buf.id,
                                     name: buf.name,
                                     input: Value::Object(Default::default()),
+                                    cache_control: None,
                                 },
                             });
                             events.push(StreamEvent::ContentBlockDelta {
@@ -793,22 +988,14 @@ fn parse_openai_sse_line_events(
                         }
                         events.push(StreamEvent::MessageDelta {
                             stop_reason: Some("tool_use".into()),
-                            usage: chunk.usage.map(|u| Usage {
-                                prompt_tokens: u.prompt_tokens,
-                                completion_tokens: u.completion_tokens,
-                                total_tokens: u.total_tokens,
-                            }),
+                            usage: chunk.usage.map(openai_usage_to_ir),
                         });
                     }
                     FinishReason::Stop | FinishReason::Length => {
                         events.push(StreamEvent::ContentBlockStop { index });
                         events.push(StreamEvent::MessageDelta {
                             stop_reason: Some("end_turn".into()),
-                            usage: chunk.usage.map(|u| Usage {
-                                prompt_tokens: u.prompt_tokens,
-                                completion_tokens: u.completion_tokens,
-                                total_tokens: u.total_tokens,
-                            }),
+                            usage: chunk.usage.map(openai_usage_to_ir),
                         });
                     }
                     FinishReason::ContentFilter => {
@@ -839,14 +1026,95 @@ mod tests {
             model: "gpt-5.5".into(),
             messages,
             system: None,
+            system_cache_control: None,
             temperature: None,
             max_tokens: Some(128),
             stop_sequences: Vec::new(),
             tools: Vec::new(),
             tool_choice: None,
             stream: false,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
             extra: Default::default(),
         }
+    }
+
+    #[test]
+    fn streaming_request_includes_usage_stream_options() {
+        let mut req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+                cache_control: None,
+            }],
+        }]);
+        req.stream = true;
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+
+        assert_eq!(value["stream"], true);
+        assert_eq!(value["stream_options"]["include_usage"], true);
+    }
+
+    #[test]
+    fn openai_request_shape_summary_redacts_prompt_text() {
+        let req = base_request(vec![
+            Message {
+                role: Role::User,
+                content: vec![ContentBlock::Text {
+                    text: "SECRET_PROMPT_TEXT".into(),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_1".into(),
+                    name: "lookup".into(),
+                    input: json!({"query": "SECRET_TOOL_ARGUMENT"}),
+                    cache_control: None,
+                }],
+            },
+        ]);
+
+        let native = ir_to_openai_request(&req);
+        let summary = summarize_openai_request_shape(&native);
+
+        assert!(!summary.contains("SECRET_PROMPT_TEXT"));
+        assert!(!summary.contains("SECRET_TOOL_ARGUMENT"));
+        assert!(summary.contains("hash="));
+        assert!(summary.contains("len="));
+    }
+
+    #[test]
+    fn openai_request_includes_prompt_cache_key_and_canonical_tools() {
+        let mut req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::Text {
+                text: "hello".into(),
+                cache_control: None,
+            }],
+        }]);
+        req.prompt_cache_key = Some("ferryllm:gpt-5.5".into());
+        req.tools = vec![Tool {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            parameters: json!({
+                "z": true,
+                "a": {"b": 1, "a": 2}
+            }),
+            cache_control: None,
+        }];
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+
+        assert_eq!(value["prompt_cache_key"], "ferryllm:gpt-5.5");
+        assert_eq!(
+            value["tools"][0]["function"]["parameters"].to_string(),
+            r#"{"a":{"a":2,"b":1},"z":true}"#
+        );
     }
 
     #[test]
@@ -858,11 +1126,13 @@ mod tests {
                     id: "toolu_1".into(),
                     name: "read_file".into(),
                     input: json!({"path": "Cargo.toml"}),
+                    cache_control: None,
                 },
                 ContentBlock::ToolUse {
                     id: "toolu_2".into(),
                     name: "shell".into(),
                     input: json!({"command": ["pwd"]}),
+                    cache_control: None,
                 },
             ],
         }]);
@@ -900,11 +1170,13 @@ mod tests {
                     id: "toolu_1".into(),
                     content: "file contents".into(),
                     is_error: false,
+                    cache_control: None,
                 },
                 ContentBlock::ToolResult {
                     id: "toolu_2".into(),
                     content: "shell output".into(),
                     is_error: false,
+                    cache_control: None,
                 },
             ],
         }]);
@@ -930,6 +1202,7 @@ mod tests {
                 id: "toolu_empty".into(),
                 content: String::new(),
                 is_error: false,
+                cache_control: None,
             }],
         }]);
 
@@ -951,6 +1224,7 @@ mod tests {
                 id: String::new(),
                 content: "orphaned output".into(),
                 is_error: false,
+                cache_control: None,
             }],
         }]);
 
@@ -1071,6 +1345,54 @@ mod tests {
             StreamEvent::MessageDelta { stop_reason, usage } => {
                 assert_eq!(stop_reason.as_deref(), Some("tool_use"));
                 assert!(usage.is_none());
+            }
+            other => panic!("expected message delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_usage_cached_tokens_map_to_ir_usage() {
+        let resp: OpenAIResponse = serde_json::from_value(json!({
+            "id": "chatcmpl_cache",
+            "model": "gpt-5.4",
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok"},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 1200,
+                "completion_tokens": 20,
+                "total_tokens": 1220,
+                "prompt_tokens_details": {"cached_tokens": 900}
+            }
+        }))
+        .expect("openai response");
+
+        let ir = openai_response_to_ir(resp);
+
+        assert_eq!(ir.usage.prompt_tokens, 1200);
+        assert_eq!(ir.usage.cached_tokens, Some(900));
+        assert_eq!(ir.usage.cache_read_input_tokens, Some(900));
+    }
+
+    #[test]
+    fn streaming_usage_only_chunk_maps_to_message_delta() {
+        let mut state = OpenAIToolStreamState::default();
+        let events = parse_openai_sse_line_events(
+            r#"data: {"id":"resp_cache","object":"chat.completion.chunk","model":"gpt-5.5","choices":[],"usage":{"prompt_tokens":1200,"completion_tokens":20,"total_tokens":1220,"prompt_tokens_details":{"cached_tokens":900}}}"#,
+            &mut state,
+        )
+        .expect("usage-only chunk");
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::MessageDelta { stop_reason, usage } => {
+                assert!(stop_reason.is_none());
+                let usage = usage.as_ref().expect("usage");
+                assert_eq!(usage.prompt_tokens, 1200);
+                assert_eq!(usage.cached_tokens, Some(900));
+                assert_eq!(usage.cache_read_input_tokens, Some(900));
             }
             other => panic!("expected message delta, got {other:?}"),
         }

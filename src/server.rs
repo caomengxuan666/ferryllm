@@ -18,8 +18,10 @@ use futures::StreamExt;
 
 use crate::adapter::AdapterError;
 use crate::entry::{anthropic, openai};
-use crate::ir;
+use crate::ir::{self, ContentBlock};
 use crate::router::{ResolvedFallback, Router as ModelRouter};
+use crate::token_observability;
+use crate::token_observability::DEBUG_REQUEST_SHAPE_FLAG;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 use tracing::{error, info, trace, warn};
 
@@ -71,6 +73,7 @@ pub struct ServerOptions {
     pub per_key_rate_limit_per_minute: Option<u64>,
     pub per_key_max_concurrent_requests: Option<usize>,
     pub metrics_enabled: bool,
+    pub prompt_cache: PromptCacheOptions,
 }
 
 impl Default for ServerOptions {
@@ -89,6 +92,38 @@ impl Default for ServerOptions {
             per_key_rate_limit_per_minute: None,
             per_key_max_concurrent_requests: None,
             metrics_enabled: true,
+            prompt_cache: PromptCacheOptions::default(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct PromptCacheOptions {
+    pub auto_inject_anthropic_cache_control: bool,
+    pub cache_system: bool,
+    pub cache_tools: bool,
+    pub cache_last_user_message: bool,
+    pub openai_prompt_cache_key: String,
+    pub openai_prompt_cache_retention: Option<String>,
+    pub debug_log_request_shape: bool,
+    pub relocate_system_prefix_range: Option<(usize, usize)>,
+    pub log_relocated_system_text: bool,
+    pub strip_system_line_prefixes: Vec<String>,
+}
+
+impl Default for PromptCacheOptions {
+    fn default() -> Self {
+        Self {
+            auto_inject_anthropic_cache_control: true,
+            cache_system: true,
+            cache_tools: true,
+            cache_last_user_message: true,
+            openai_prompt_cache_key: "ferryllm".into(),
+            openai_prompt_cache_retention: None,
+            debug_log_request_shape: true,
+            relocate_system_prefix_range: None,
+            log_relocated_system_text: false,
+            strip_system_line_prefixes: Vec::new(),
         }
     }
 }
@@ -100,6 +135,12 @@ pub struct Metrics {
     requests_error_total: AtomicU64,
     upstream_errors_total: AtomicU64,
     request_latency_micros_total: AtomicU64,
+    estimated_prompt_tokens_total: AtomicU64,
+    upstream_prompt_tokens_total: AtomicU64,
+    cache_prompt_tokens_total: AtomicU64,
+    prompt_cached_tokens_total: AtomicU64,
+    prompt_cache_creation_tokens_total: AtomicU64,
+    prompt_cache_read_tokens_total: AtomicU64,
 }
 
 struct RateLimiter {
@@ -116,6 +157,30 @@ struct KeyLimiter {
 struct ProviderHealth {
     consecutive_failures: AtomicU64,
     circuit_opened_at_epoch_secs: AtomicU64,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct PromptObservation {
+    estimated_prompt_tokens: Option<u64>,
+    upstream_prompt_tokens: Option<u64>,
+    cache_prompt_tokens: Option<u64>,
+    cached_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+}
+
+impl PromptObservation {
+    fn with_usage(self, usage: &ir::Usage) -> Self {
+        let cache_prompt_tokens = normalized_cache_prompt_tokens(usage);
+        Self {
+            upstream_prompt_tokens: Some(u64::from(usage.prompt_tokens)),
+            cache_prompt_tokens: Some(cache_prompt_tokens),
+            cached_tokens: usage.cached_tokens.map(u64::from),
+            cache_creation_input_tokens: usage.cache_creation_input_tokens.map(u64::from),
+            cache_read_input_tokens: usage.cache_read_input_tokens.map(u64::from),
+            ..self
+        }
+    }
 }
 
 impl Default for ProviderHealth {
@@ -202,18 +267,60 @@ impl Metrics {
         );
     }
 
+    fn observe_prompt(&self, observation: PromptObservation) {
+        if let Some(tokens) = observation.estimated_prompt_tokens {
+            self.estimated_prompt_tokens_total
+                .fetch_add(tokens, Ordering::Relaxed);
+        }
+        if let Some(tokens) = observation.upstream_prompt_tokens {
+            self.upstream_prompt_tokens_total
+                .fetch_add(tokens, Ordering::Relaxed);
+        }
+        if let Some(tokens) = observation.cache_prompt_tokens {
+            self.cache_prompt_tokens_total
+                .fetch_add(tokens, Ordering::Relaxed);
+        }
+        if let Some(tokens) = observation.cached_tokens {
+            self.prompt_cached_tokens_total
+                .fetch_add(tokens, Ordering::Relaxed);
+        }
+        if let Some(tokens) = observation.cache_creation_input_tokens {
+            self.prompt_cache_creation_tokens_total
+                .fetch_add(tokens, Ordering::Relaxed);
+        }
+        if let Some(tokens) = observation.cache_read_input_tokens {
+            self.prompt_cache_read_tokens_total
+                .fetch_add(tokens, Ordering::Relaxed);
+        }
+    }
+
     fn render(&self) -> String {
         let requests_total = self.requests_total.load(Ordering::Relaxed);
         let latency_total = self.request_latency_micros_total.load(Ordering::Relaxed);
         let latency_average = latency_total.checked_div(requests_total).unwrap_or(0);
+        let upstream_prompt_tokens = self.upstream_prompt_tokens_total.load(Ordering::Relaxed);
+        let cache_prompt_tokens = self.cache_prompt_tokens_total.load(Ordering::Relaxed);
+        let cached_tokens = self.prompt_cached_tokens_total.load(Ordering::Relaxed);
+        let cache_hit_ratio = cached_tokens
+            .checked_mul(10_000)
+            .and_then(|v| v.checked_div(cache_prompt_tokens))
+            .unwrap_or(0);
         format!(
-            "# TYPE ferryllm_requests_total counter\nferryllm_requests_total {}\n# TYPE ferryllm_requests_ok_total counter\nferryllm_requests_ok_total {}\n# TYPE ferryllm_requests_error_total counter\nferryllm_requests_error_total {}\n# TYPE ferryllm_upstream_errors_total counter\nferryllm_upstream_errors_total {}\n# TYPE ferryllm_request_latency_micros_total counter\nferryllm_request_latency_micros_total {}\n# TYPE ferryllm_request_latency_micros_average gauge\nferryllm_request_latency_micros_average {}\n",
+            "# TYPE ferryllm_requests_total counter\nferryllm_requests_total {}\n# TYPE ferryllm_requests_ok_total counter\nferryllm_requests_ok_total {}\n# TYPE ferryllm_requests_error_total counter\nferryllm_requests_error_total {}\n# TYPE ferryllm_upstream_errors_total counter\nferryllm_upstream_errors_total {}\n# TYPE ferryllm_request_latency_micros_total counter\nferryllm_request_latency_micros_total {}\n# TYPE ferryllm_request_latency_micros_average gauge\nferryllm_request_latency_micros_average {}\n# TYPE ferryllm_estimated_prompt_tokens_total counter\nferryllm_estimated_prompt_tokens_total {}\n# TYPE ferryllm_upstream_prompt_tokens_total counter\nferryllm_upstream_prompt_tokens_total {}\n# TYPE ferryllm_cache_prompt_tokens_total counter\nferryllm_cache_prompt_tokens_total {}\n# TYPE ferryllm_prompt_cached_tokens_total counter\nferryllm_prompt_cached_tokens_total {}\n# TYPE ferryllm_prompt_cache_creation_tokens_total counter\nferryllm_prompt_cache_creation_tokens_total {}\n# TYPE ferryllm_prompt_cache_read_tokens_total counter\nferryllm_prompt_cache_read_tokens_total {}\n# TYPE ferryllm_prompt_cache_hit_ratio gauge\nferryllm_prompt_cache_hit_ratio {:.4}\n",
             requests_total,
             self.requests_ok_total.load(Ordering::Relaxed),
             self.requests_error_total.load(Ordering::Relaxed),
             self.upstream_errors_total.load(Ordering::Relaxed),
             latency_total,
             latency_average,
+            self.estimated_prompt_tokens_total.load(Ordering::Relaxed),
+            upstream_prompt_tokens,
+            cache_prompt_tokens,
+            cached_tokens,
+            self.prompt_cache_creation_tokens_total
+                .load(Ordering::Relaxed),
+            self.prompt_cache_read_tokens_total.load(Ordering::Relaxed),
+            cache_hit_ratio as f64 / 10_000.0,
         )
     }
 }
@@ -227,6 +334,233 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/readyz", axum::routing::get(ready_handler))
         .route("/metrics", axum::routing::get(metrics_handler))
         .with_state(state)
+}
+
+fn apply_anthropic_prompt_cache_policy(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
+    if !options.auto_inject_anthropic_cache_control {
+        return;
+    }
+
+    let cache_control = serde_json::json!({"type": "ephemeral"});
+
+    if options.cache_system && req.system.is_some() && req.system_cache_control.is_none() {
+        req.system_cache_control = Some(cache_control.clone());
+    }
+
+    if options.cache_tools && !req.tools.is_empty() {
+        if let Some(tool) = req
+            .tools
+            .iter_mut()
+            .rev()
+            .find(|tool| tool.cache_control.is_none())
+        {
+            tool.cache_control = Some(cache_control.clone());
+        }
+    }
+
+    if options.cache_last_user_message {
+        if let Some(block) = req
+            .messages
+            .iter_mut()
+            .rev()
+            .find(|message| message.role == ir::Role::User)
+            .and_then(|message| message.content.iter_mut().rev().find(is_cacheable_block))
+        {
+            set_cache_control_if_missing(block, cache_control);
+        }
+    }
+}
+
+fn relocate_system_prefix_context(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
+    let Some((range_start, range_end)) = options.relocate_system_prefix_range else {
+        return;
+    };
+    let Some(system) = req.system.as_mut() else {
+        return;
+    };
+    let Some((line_start, line_end)) = line_range_intersecting(system, range_start, range_end)
+    else {
+        return;
+    };
+
+    let moved = system[line_start..line_end].to_string();
+    if moved.trim().is_empty() {
+        return;
+    }
+
+    system.replace_range(line_start..line_end, "");
+    trim_blank_boundary(system, line_start);
+    req.messages.push(ir::Message {
+        role: ir::Role::User,
+        content: vec![ContentBlock::Text {
+            text: format!(
+                "Relocated dynamic system context for cache stability:\n{}",
+                moved.trim()
+            ),
+            cache_control: None,
+        }],
+    });
+    info!(
+        moved_bytes = moved.len(),
+        range_start, range_end, "relocated dynamic system prefix context"
+    );
+    if options.log_relocated_system_text {
+        info!(
+            relocated_system_text = %moved.trim(),
+            "relocated dynamic system prefix text"
+        );
+    }
+}
+
+fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
+    let Some(system) = req.system.as_mut() else {
+        return;
+    };
+    if options.strip_system_line_prefixes.is_empty() {
+        return;
+    }
+
+    let original = system.clone();
+    let mut kept = Vec::new();
+    let mut stripped = Vec::new();
+    for line in original.lines() {
+        if options
+            .strip_system_line_prefixes
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+        {
+            stripped.push(line.to_string());
+        } else {
+            kept.push(line.to_string());
+        }
+    }
+
+    if stripped.is_empty() {
+        return;
+    }
+
+    *system = kept.join("\n");
+    if system.is_empty() {
+        req.system = None;
+    }
+
+    for line in stripped {
+        req.messages.push(ir::Message {
+            role: ir::Role::User,
+            content: vec![ContentBlock::Text {
+                text: line,
+                cache_control: None,
+            }],
+        });
+    }
+
+    info!(
+        stripped_lines = req.messages.len(),
+        "stripped system line prefixes into trailing user context"
+    );
+}
+
+fn line_range_intersecting(
+    text: &str,
+    range_start: usize,
+    range_end: usize,
+) -> Option<(usize, usize)> {
+    if text.is_empty() || range_start >= range_end || range_start >= text.len() {
+        return None;
+    }
+
+    let start = clamp_to_char_boundary(text, range_start.min(text.len()));
+    let end = clamp_to_char_boundary(text, range_end.min(text.len()));
+    let line_start = text[..start].rfind('\n').map_or(0, |pos| pos + 1);
+    let line_end = text[end..]
+        .find('\n')
+        .map_or(text.len(), |pos| end + pos + 1);
+    (line_start < line_end).then_some((line_start, line_end))
+}
+
+fn clamp_to_char_boundary(text: &str, mut index: usize) -> usize {
+    while index > 0 && !text.is_char_boundary(index) {
+        index -= 1;
+    }
+    index
+}
+
+fn trim_blank_boundary(text: &mut String, index: usize) {
+    if text.is_empty() {
+        return;
+    }
+    let index = clamp_to_char_boundary(text, index.min(text.len()));
+    let remove_double_newline = index > 0
+        && index < text.len()
+        && text.as_bytes().get(index - 1) == Some(&b'\n')
+        && text.as_bytes().get(index) == Some(&b'\n');
+    if remove_double_newline {
+        text.replace_range(index..index + 1, "");
+    }
+}
+
+fn apply_openai_prompt_cache_policy(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
+    if req.prompt_cache_key.is_none() && !options.openai_prompt_cache_key.trim().is_empty() {
+        req.prompt_cache_key = Some(format!(
+            "{}:{}:{}:{}",
+            options.openai_prompt_cache_key.trim(),
+            req.model,
+            req.tools.len(),
+            req.system.as_ref().map_or(0, |system| system.len())
+        ));
+    }
+    if req.prompt_cache_retention.is_none() {
+        req.prompt_cache_retention = options.openai_prompt_cache_retention.clone();
+    }
+}
+
+fn apply_request_shape_debug_policy(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
+    if options.debug_log_request_shape {
+        req.extra.insert(
+            DEBUG_REQUEST_SHAPE_FLAG.into(),
+            serde_json::Value::Bool(true),
+        );
+    }
+}
+
+fn is_cacheable_block(block: &&mut ContentBlock) -> bool {
+    matches!(
+        block,
+        ContentBlock::Text { .. }
+            | ContentBlock::Image { .. }
+            | ContentBlock::ToolResult { .. }
+            | ContentBlock::ToolUse { .. }
+    )
+}
+
+fn set_cache_control_if_missing(block: &mut ContentBlock, cache_control: serde_json::Value) {
+    match block {
+        ContentBlock::Text {
+            cache_control: slot,
+            ..
+        }
+        | ContentBlock::Image {
+            cache_control: slot,
+            ..
+        }
+        | ContentBlock::ToolUse {
+            cache_control: slot,
+            ..
+        }
+        | ContentBlock::ToolResult {
+            cache_control: slot,
+            ..
+        }
+        | ContentBlock::Thinking {
+            cache_control: slot,
+            ..
+        } => {
+            if slot.is_none() {
+                *slot = Some(cache_control);
+            }
+        }
+        ContentBlock::RedactedThinking => {}
+    }
 }
 
 // ── OpenAI-compatible endpoint ──────────────────────────────────────────────
@@ -246,6 +580,9 @@ async fn openai_chat_handler(
         serde_json::from_value(body).map_err(|e| AppError::bad_request(e.to_string()))?;
     let stream = openai_req.stream;
     let mut ir_req = openai::openai_to_ir(&openai_req);
+    strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
+    relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
+    let prompt_observation = estimate_prompt_observation(&ir_req);
     info!(request_id = %request_id, entry = "openai", model = %ir_req.model, stream, "incoming request");
     let route = state
         .router
@@ -255,11 +592,20 @@ async fn openai_chat_handler(
     // Apply model rewrite so the backend sees the correct model name.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
+    apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
+    apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
     info!(request_id = %request_id, entry = "openai", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = fallback_count, "resolved route");
 
     let response = if stream {
-        handle_openai_stream(&state, route.adapter, ir_req, display_model.clone()).await
+        handle_openai_stream(
+            &state,
+            route.adapter,
+            ir_req,
+            display_model.clone(),
+            prompt_observation,
+        )
+        .await
     } else {
         handle_openai_chat(
             &state,
@@ -267,6 +613,7 @@ async fn openai_chat_handler(
             route.fallbacks,
             ir_req,
             display_model.clone(),
+            prompt_observation,
         )
         .await
     };
@@ -309,8 +656,13 @@ async fn handle_openai_chat(
     fallbacks: Vec<ResolvedFallback>,
     ir_req: ir::ChatRequest,
     display_model: String,
+    prompt_observation: PromptObservation,
 ) -> Result<axum::response::Response, AppError> {
     let mut ir_resp = chat_with_fallbacks(state, adapter, fallbacks, &ir_req).await?;
+    state
+        .metrics
+        .observe_prompt(prompt_observation.with_usage(&ir_resp.usage));
+    log_prompt_observation("openai", &display_model, &ir_resp.usage, prompt_observation);
     ir_resp.model = display_model;
     let openai_resp = openai::ir_to_openai_response(ir_resp);
     let body = serde_json::to_string(&openai_resp).unwrap_or_default();
@@ -327,17 +679,29 @@ async fn handle_openai_stream(
     adapter: Arc<dyn crate::adapter::Adapter>,
     ir_req: ir::ChatRequest,
     model: String,
+    prompt_observation: PromptObservation,
 ) -> Result<axum::response::Response, AppError> {
     let backend_stream = with_timeout(state, adapter.chat_stream(&ir_req)).await?;
 
     let message_id = format!("chatcmpl-{}", uuid_v4());
+    let metrics = Arc::clone(state);
 
     let sse_stream = backend_stream.filter_map(move |result| {
         let mid = message_id.clone();
         let m = model.clone();
+        let state = Arc::clone(&metrics);
         async move {
             match result {
                 Ok(stream_event) => {
+                    if let ir::StreamEvent::MessageDelta {
+                        usage: Some(usage), ..
+                    } = &stream_event
+                    {
+                        state
+                            .metrics
+                            .observe_prompt(prompt_observation.with_usage(usage));
+                        log_prompt_observation("openai", &m, usage, prompt_observation);
+                    }
                     let line = openai::ir_to_openai_sse(stream_event, &mid, &m);
                     line.map(|data| {
                         Ok::<_, Infallible>(Event::default().data(openai_sse_data(&data)))
@@ -379,6 +743,10 @@ async fn anthropic_messages_handler(
         serde_json::from_value(body).map_err(|e| AppError::bad_request(e.to_string()))?;
     let stream = anthro_req.stream;
     let mut ir_req = anthropic::anthropic_to_ir(&anthro_req);
+    strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
+    relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
+    apply_anthropic_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
+    let prompt_observation = estimate_prompt_observation(&ir_req);
     info!(request_id = %request_id, entry = "anthropic", model = %ir_req.model, stream, "incoming request");
     let route = state
         .router
@@ -388,11 +756,20 @@ async fn anthropic_messages_handler(
     // Apply model rewrite.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
+    apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
+    apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
     info!(request_id = %request_id, entry = "anthropic", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = fallback_count, "resolved route");
 
     let response = if stream {
-        handle_anthropic_stream(&state, route.adapter, ir_req, display_model.clone()).await
+        handle_anthropic_stream(
+            &state,
+            route.adapter,
+            ir_req,
+            display_model.clone(),
+            prompt_observation,
+        )
+        .await
     } else {
         handle_anthropic_chat(
             &state,
@@ -400,6 +777,7 @@ async fn anthropic_messages_handler(
             route.fallbacks,
             ir_req,
             display_model.clone(),
+            prompt_observation,
         )
         .await
     };
@@ -442,8 +820,18 @@ async fn handle_anthropic_chat(
     fallbacks: Vec<ResolvedFallback>,
     ir_req: ir::ChatRequest,
     display_model: String,
+    prompt_observation: PromptObservation,
 ) -> Result<axum::response::Response, AppError> {
     let mut ir_resp = chat_with_fallbacks(state, adapter, fallbacks, &ir_req).await?;
+    state
+        .metrics
+        .observe_prompt(prompt_observation.with_usage(&ir_resp.usage));
+    log_prompt_observation(
+        "anthropic",
+        &display_model,
+        &ir_resp.usage,
+        prompt_observation,
+    );
     ir_resp.model = display_model;
     let anthro_resp = anthropic::ir_to_anthropic_response(ir_resp);
     let body = serde_json::to_string(&anthro_resp).unwrap_or_default();
@@ -460,6 +848,7 @@ async fn handle_anthropic_stream(
     adapter: Arc<dyn crate::adapter::Adapter>,
     ir_req: ir::ChatRequest,
     display_model: String,
+    prompt_observation: PromptObservation,
 ) -> Result<axum::response::Response, AppError> {
     let backend_stream = with_timeout(state, adapter.chat_stream(&ir_req)).await?;
 
@@ -496,6 +885,7 @@ async fn handle_anthropic_stream(
     let mut next_output_index: u32 = 0;
 
     let closing_flag = Arc::clone(&closing_sent);
+    let metrics_state = Arc::clone(state);
     let sse_stream = combined
         .map(move |control| {
             let mut pending: Vec<ir::StreamEvent> = Vec::new();
@@ -536,6 +926,7 @@ async fn handle_anthropic_stream(
                             index: next,
                             content_block: ir::ContentBlock::Text {
                                 text: String::new(),
+                                cache_control: None,
                             },
                         });
                         next
@@ -595,6 +986,15 @@ async fn handle_anthropic_stream(
 
             if let ir::StreamEvent::MessageStop = &event {
                 closing_flag.store(true, Ordering::Relaxed);
+            }
+            if let ir::StreamEvent::MessageDelta {
+                usage: Some(usage), ..
+            } = &event
+            {
+                metrics_state
+                    .metrics
+                    .observe_prompt(prompt_observation.with_usage(usage));
+                log_prompt_observation("anthropic", &display_model, usage, prompt_observation);
             }
             pending.push(event);
 
@@ -724,6 +1124,64 @@ fn log_access(log: RequestLog<'_>) {
         error_kind = log.error_kind.unwrap_or("none"),
         "request completed"
     );
+}
+
+fn estimate_prompt_observation(req: &ir::ChatRequest) -> PromptObservation {
+    let estimated_prompt_tokens =
+        token_observability::estimate_prompt_tokens(req).map(|estimate| estimate.prompt_tokens);
+    PromptObservation {
+        estimated_prompt_tokens,
+        ..PromptObservation::default()
+    }
+}
+
+fn log_prompt_observation(
+    entry: &str,
+    model: &str,
+    usage: &ir::Usage,
+    prompt_observation: PromptObservation,
+) {
+    let cached_tokens = usage
+        .cached_tokens
+        .or(usage.cache_read_input_tokens)
+        .map(u64::from)
+        .unwrap_or(0);
+    let cache_prompt_tokens = normalized_cache_prompt_tokens(usage);
+    let cache_hit_ratio = if cache_prompt_tokens == 0 {
+        0.0
+    } else {
+        cached_tokens as f64 / cache_prompt_tokens as f64
+    };
+
+    info!(
+        entry,
+        model,
+        estimated_prompt_tokens = prompt_observation.estimated_prompt_tokens,
+        upstream_prompt_tokens = usage.prompt_tokens,
+        cache_prompt_tokens,
+        cached_tokens,
+        cache_creation_input_tokens = usage.cache_creation_input_tokens.unwrap_or(0),
+        cache_read_input_tokens = usage.cache_read_input_tokens.unwrap_or(0),
+        cache_hit_ratio,
+        "prompt cache observation"
+    );
+}
+
+fn normalized_cache_prompt_tokens(usage: &ir::Usage) -> u64 {
+    let prompt_tokens = u64::from(usage.prompt_tokens);
+    let cache_creation_tokens = usage
+        .cache_creation_input_tokens
+        .map(u64::from)
+        .unwrap_or(0);
+    let cache_read_tokens = usage.cache_read_input_tokens.map(u64::from).unwrap_or(0);
+
+    if usage.cache_creation_input_tokens.is_some()
+        || (usage.cached_tokens.is_none() && usage.cache_read_input_tokens.is_some())
+    {
+        prompt_tokens + cache_creation_tokens + cache_read_tokens
+    } else {
+        prompt_tokens
+    }
 }
 
 fn provider_health(state: &Arc<AppState>, provider: &str) -> Arc<ProviderHealth> {
@@ -1140,6 +1598,7 @@ mod tests {
                         role: ir::Role::Assistant,
                         content: vec![ir::ContentBlock::Text {
                             text: self.name.into(),
+                            cache_control: None,
                         }],
                     }),
                     delta: None,
@@ -1187,6 +1646,7 @@ mod tests {
                         role: ir::Role::Assistant,
                         content: vec![ir::ContentBlock::Text {
                             text: self.name.into(),
+                            cache_control: None,
                         }],
                     }),
                     delta: None,
@@ -1232,12 +1692,15 @@ mod tests {
             model: "primary-model".into(),
             messages: Vec::new(),
             system: None,
+            system_cache_control: None,
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),
             tools: Vec::new(),
             tool_choice: None,
             stream: false,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
             extra: Default::default(),
         };
 
@@ -1350,12 +1813,15 @@ mod tests {
             model: model.into(),
             messages: Vec::new(),
             system: None,
+            system_cache_control: None,
             temperature: None,
             max_tokens: None,
             stop_sequences: Vec::new(),
             tools: Vec::new(),
             tool_choice: None,
             stream: false,
+            prompt_cache_key: None,
+            prompt_cache_retention: None,
             extra: Default::default(),
         }
     }
@@ -1372,6 +1838,179 @@ mod tests {
 
         assert!(rendered.contains("ferryllm_request_latency_micros_total 400"));
         assert!(rendered.contains("ferryllm_request_latency_micros_average 200"));
+    }
+
+    #[test]
+    fn metrics_cache_hit_ratio_uses_anthropic_style_cache_prompt_tokens() {
+        let metrics = Metrics::default();
+        metrics.observe_prompt(PromptObservation {
+            upstream_prompt_tokens: Some(2_000),
+            cache_prompt_tokens: Some(3_900),
+            cached_tokens: Some(1_500),
+            cache_creation_input_tokens: Some(400),
+            cache_read_input_tokens: Some(1_500),
+            ..PromptObservation::default()
+        });
+
+        let rendered = metrics.render();
+
+        assert!(rendered.contains("ferryllm_cache_prompt_tokens_total 3900"));
+        assert!(rendered.contains("ferryllm_prompt_cache_hit_ratio 0.3846"));
+    }
+
+    #[test]
+    fn metrics_cache_hit_ratio_does_not_double_count_openai_cached_tokens() {
+        let metrics = Metrics::default();
+        let observation = PromptObservation::default().with_usage(&ir::Usage {
+            prompt_tokens: 197_136,
+            completion_tokens: 0,
+            total_tokens: 197_136,
+            cached_tokens: Some(196_608),
+            cache_creation_input_tokens: None,
+            cache_read_input_tokens: Some(196_608),
+        });
+
+        metrics.observe_prompt(observation);
+        let rendered = metrics.render();
+
+        assert!(rendered.contains("ferryllm_cache_prompt_tokens_total 197136"));
+        assert!(rendered.contains("ferryllm_prompt_cached_tokens_total 196608"));
+        assert!(rendered.contains("ferryllm_prompt_cache_hit_ratio 0.9973"));
+    }
+
+    #[test]
+    fn anthropic_prompt_cache_policy_injects_last_stable_breakpoints() {
+        let mut request = test_chat_request("claude-sonnet-4-6");
+        request.system = Some("stable system".into());
+        request.tools = vec![ir::Tool {
+            name: "read_file".into(),
+            description: "read files".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            cache_control: None,
+        }];
+        request.messages = vec![
+            ir::Message {
+                role: ir::Role::User,
+                content: vec![ir::ContentBlock::Text {
+                    text: "first".into(),
+                    cache_control: None,
+                }],
+            },
+            ir::Message {
+                role: ir::Role::User,
+                content: vec![ir::ContentBlock::Text {
+                    text: "stable suffix".into(),
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        apply_anthropic_prompt_cache_policy(&mut request, &PromptCacheOptions::default());
+
+        assert_eq!(
+            request.system_cache_control,
+            Some(serde_json::json!({"type": "ephemeral"}))
+        );
+        assert_eq!(
+            request.tools[0].cache_control,
+            Some(serde_json::json!({"type": "ephemeral"}))
+        );
+        match &request.messages[0].content[0] {
+            ir::ContentBlock::Text { cache_control, .. } => assert!(cache_control.is_none()),
+            other => panic!("expected text block, got {other:?}"),
+        }
+        match &request.messages[1].content[0] {
+            ir::ContentBlock::Text { cache_control, .. } => {
+                assert_eq!(
+                    cache_control,
+                    &Some(serde_json::json!({"type": "ephemeral"}))
+                );
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn openai_prompt_cache_policy_sets_stable_key_after_rewrite() {
+        let mut request = test_chat_request("gpt-5.5");
+        request.system = Some("stable system".into());
+        request.tools = vec![ir::Tool {
+            name: "lookup".into(),
+            description: "lookup".into(),
+            parameters: serde_json::json!({"type": "object"}),
+            cache_control: None,
+        }];
+
+        apply_openai_prompt_cache_policy(&mut request, &PromptCacheOptions::default());
+
+        assert_eq!(
+            request.prompt_cache_key.as_deref(),
+            Some("ferryllm:gpt-5.5:1:13")
+        );
+    }
+
+    #[test]
+    fn relocate_system_prefix_context_moves_intersecting_line_to_user_context() {
+        let mut request = test_chat_request("claude-sonnet-4-6");
+        request.system =
+            Some("stable heading\nvolatile session marker\nstable instruction tail".into());
+        request.messages.push(ir::Message {
+            role: ir::Role::User,
+            content: vec![ir::ContentBlock::Text {
+                text: "original user".into(),
+                cache_control: None,
+            }],
+        });
+        let options = PromptCacheOptions {
+            relocate_system_prefix_range: Some((16, 24)),
+            ..PromptCacheOptions::default()
+        };
+
+        relocate_system_prefix_context(&mut request, &options);
+
+        assert_eq!(
+            request.system.as_deref(),
+            Some("stable heading\nstable instruction tail")
+        );
+        assert_eq!(request.messages.len(), 2);
+        match &request.messages[0].content[0] {
+            ir::ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "original user");
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
+        match &request.messages[1].content[0] {
+            ir::ContentBlock::Text { text, .. } => {
+                assert!(text.contains("volatile session marker"));
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn strip_system_line_prefixes_moves_only_matching_lines() {
+        let mut request = test_chat_request("claude-sonnet-4-6");
+        request.system = Some(
+            "stable heading\nx-anthropic-billing-header: debug\nstable instruction tail".into(),
+        );
+        let options = PromptCacheOptions {
+            strip_system_line_prefixes: vec!["x-anthropic-billing-header:".into()],
+            ..PromptCacheOptions::default()
+        };
+
+        strip_system_line_prefixes(&mut request, &options);
+
+        assert_eq!(
+            request.system.as_deref(),
+            Some("stable heading\nstable instruction tail")
+        );
+        assert_eq!(request.messages.len(), 1);
+        match &request.messages[0].content[0] {
+            ir::ContentBlock::Text { text, .. } => {
+                assert_eq!(text, "x-anthropic-billing-header: debug");
+            }
+            other => panic!("expected text block, got {other:?}"),
+        }
     }
 
     #[test]
