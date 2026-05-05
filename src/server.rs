@@ -1,7 +1,7 @@
 use std::convert::Infallible;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use axum::{
     body::Bytes,
@@ -25,6 +25,7 @@ pub struct AppState {
     pub options: ServerOptions,
     pub metrics: Metrics,
     concurrency: Option<Arc<Semaphore>>,
+    rate_limiter: Option<RateLimiter>,
 }
 
 impl AppState {
@@ -34,11 +35,16 @@ impl AppState {
             .filter(|limit| *limit > 0)
             .map(Semaphore::new)
             .map(Arc::new);
+        let rate_limiter = options
+            .rate_limit_per_minute
+            .filter(|limit| *limit > 0)
+            .map(RateLimiter::new);
         Self {
             router,
             options,
             metrics,
             concurrency,
+            rate_limiter,
         }
     }
 }
@@ -48,6 +54,7 @@ pub struct ServerOptions {
     pub request_timeout_secs: u64,
     pub body_limit_bytes: usize,
     pub max_concurrent_requests: Option<usize>,
+    pub rate_limit_per_minute: Option<u64>,
     pub auth_enabled: bool,
     pub auth_keys: Vec<String>,
     pub metrics_enabled: bool,
@@ -59,6 +66,7 @@ impl Default for ServerOptions {
             request_timeout_secs: 120,
             body_limit_bytes: 32 * 1024 * 1024,
             max_concurrent_requests: None,
+            rate_limit_per_minute: None,
             auth_enabled: false,
             auth_keys: Vec::new(),
             metrics_enabled: true,
@@ -73,6 +81,57 @@ pub struct Metrics {
     requests_error_total: AtomicU64,
     upstream_errors_total: AtomicU64,
     request_latency_micros_total: AtomicU64,
+}
+
+struct RateLimiter {
+    limit: u64,
+    window_epoch_minute: AtomicU64,
+    used: AtomicU64,
+}
+
+impl RateLimiter {
+    fn new(limit: u64) -> Self {
+        Self {
+            limit,
+            window_epoch_minute: AtomicU64::new(current_epoch_minute()),
+            used: AtomicU64::new(0),
+        }
+    }
+
+    fn try_acquire(&self) -> bool {
+        self.try_acquire_at(current_epoch_minute())
+    }
+
+    fn try_acquire_at(&self, epoch_minute: u64) -> bool {
+        let current_window = self.window_epoch_minute.load(Ordering::Relaxed);
+        if current_window != epoch_minute
+            && self
+                .window_epoch_minute
+                .compare_exchange(
+                    current_window,
+                    epoch_minute,
+                    Ordering::Relaxed,
+                    Ordering::Relaxed,
+                )
+                .is_ok()
+        {
+            self.used.store(0, Ordering::Relaxed);
+        }
+
+        loop {
+            let used = self.used.load(Ordering::Relaxed);
+            if used >= self.limit {
+                return false;
+            }
+            if self
+                .used
+                .compare_exchange(used, used + 1, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                return true;
+            }
+        }
+    }
 }
 
 impl Metrics {
@@ -467,6 +526,12 @@ fn preflight(state: &Arc<AppState>, headers: &HeaderMap, body_len: usize) -> Res
         state.metrics.inc_error();
         return Err(AppError::unauthorized("invalid or missing API key".into()));
     }
+    if let Some(rate_limiter) = &state.rate_limiter {
+        if !rate_limiter.try_acquire() {
+            state.metrics.inc_error();
+            return Err(AppError::rate_limited("rate limit exceeded".into()));
+        }
+    }
     Ok(())
 }
 
@@ -531,12 +596,19 @@ async fn with_timeout<T>(
 }
 
 fn uuid_v4() -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
     let ts = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
     format!("{:032x}", ts)
+}
+
+fn current_epoch_minute() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        / 60
 }
 
 // ── Error handling ──────────────────────────────────────────────────────────
@@ -578,6 +650,14 @@ impl AppError {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: msg,
             kind: "too_many_requests",
+        }
+    }
+
+    fn rate_limited(msg: String) -> Self {
+        Self {
+            status: StatusCode::TOO_MANY_REQUESTS,
+            message: msg,
+            kind: "rate_limited",
         }
     }
 
@@ -810,5 +890,38 @@ mod tests {
         let second = acquire_concurrency(&state).expect("second permit after drop");
 
         assert!(second.is_some());
+    }
+
+    #[test]
+    fn rate_limiter_rejects_after_limit_until_next_window() {
+        let limiter = RateLimiter::new(2);
+
+        assert!(limiter.try_acquire_at(100));
+        assert!(limiter.try_acquire_at(100));
+        assert!(!limiter.try_acquire_at(100));
+        assert!(limiter.try_acquire_at(101));
+    }
+
+    #[test]
+    fn preflight_rejects_when_rate_limit_exceeded() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                rate_limit_per_minute: Some(1),
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+        let headers = HeaderMap::new();
+
+        preflight(&state, &headers, 0).expect("first request");
+        let err = preflight(&state, &headers, 0).expect_err("second request should fail");
+
+        assert_eq!(err.status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(err.kind, "rate_limited");
+        assert_eq!(
+            state.metrics.requests_error_total.load(Ordering::Relaxed),
+            1
+        );
     }
 }

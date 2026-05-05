@@ -4,6 +4,8 @@ request_timeout_secs = 120
 body_limit_mb = 32
 # Optional. Uncomment to cap in-flight requests.
 # max_concurrent_requests = 128
+# Optional. Uncomment to cap total requests per minute.
+# rate_limit_per_minute = 600
 
 [logging]
 level = "info"

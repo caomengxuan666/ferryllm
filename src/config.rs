@@ -35,6 +35,8 @@ pub struct ServerConfig {
     pub body_limit_mb: u64,
     #[serde(default)]
     pub max_concurrent_requests: Option<usize>,
+    #[serde(default)]
+    pub rate_limit_per_minute: Option<u64>,
 }
 
 impl Default for ServerConfig {
@@ -44,6 +46,7 @@ impl Default for ServerConfig {
             request_timeout_secs: default_request_timeout_secs(),
             body_limit_mb: default_body_limit_mb(),
             max_concurrent_requests: None,
+            rate_limit_per_minute: None,
         }
     }
 }
@@ -234,6 +237,7 @@ impl Config {
             request_timeout_secs: self.server.request_timeout_secs,
             body_limit_bytes: self.server.body_limit_mb.saturating_mul(1024 * 1024) as usize,
             max_concurrent_requests: self.server.max_concurrent_requests,
+            rate_limit_per_minute: self.server.rate_limit_per_minute,
             auth_enabled: self.auth.enabled,
             auth_keys,
             metrics_enabled: self.metrics.enabled,

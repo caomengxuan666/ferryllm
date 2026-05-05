@@ -37,6 +37,7 @@ listen = "0.0.0.0:3000"
 request_timeout_secs = 120
 body_limit_mb = 32
 max_concurrent_requests = 128
+rate_limit_per_minute = 600
 
 [logging]
 level = "info"
@@ -84,6 +85,7 @@ listen = "0.0.0.0:3000"
 request_timeout_secs = 120
 body_limit_mb = 32
 max_concurrent_requests = 128
+rate_limit_per_minute = 600
 graceful_shutdown_secs = 30
 ```
 
@@ -93,6 +95,7 @@ Fields:
 - `request_timeout_secs`: Maximum request duration before ferryllm returns an error.
 - `body_limit_mb`: Maximum request body size.
 - `max_concurrent_requests`: Optional maximum number of in-flight OpenAI/Anthropic chat requests. Requests above the limit return `429`.
+- `rate_limit_per_minute`: Optional global request rate cap. Requests above the limit return `429`.
 - `graceful_shutdown_secs`: Time allowed for in-flight requests during shutdown.
 
 ## Logging Section
