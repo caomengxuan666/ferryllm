@@ -301,6 +301,22 @@ ferryllm_requests_error_total
 ferryllm_upstream_errors_total
 ```
 
+## Provider Resilience
+
+Non-streaming upstream requests can be retried with exponential backoff:
+
+```toml
+[server]
+retry_attempts = 2
+retry_backoff_ms = 100
+circuit_breaker_failures = 5
+circuit_breaker_cooldown_secs = 30
+```
+
+`retry_attempts` is the number of retries after the first attempt. The default is `0`, which preserves fail-fast behavior. Streaming requests are not retried because ferryllm may already have started sending tokens to the client.
+
+When `circuit_breaker_failures` is set, ferryllm tracks consecutive failures per provider. Once the threshold is reached, that provider is short-circuited until `circuit_breaker_cooldown_secs` has elapsed. Fallback providers can still be tried while the primary provider circuit is open.
+
 ## Validation Rules
 
 The server should fail fast during startup when:

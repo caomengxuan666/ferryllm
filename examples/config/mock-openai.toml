@@ -4,6 +4,10 @@ request_timeout_secs = 30
 body_limit_mb = 2
 max_concurrent_requests = 128
 rate_limit_per_minute = 10000
+# retry_attempts = 2
+# retry_backoff_ms = 10
+# circuit_breaker_failures = 5
+# circuit_breaker_cooldown_secs = 30
 
 [logging]
 level = "warn"

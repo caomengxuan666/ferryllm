@@ -6,6 +6,11 @@ body_limit_mb = 32
 # max_concurrent_requests = 128
 # Optional. Uncomment to cap total requests per minute.
 # rate_limit_per_minute = 600
+# Optional non-streaming upstream resilience. Streaming requests are not retried.
+# retry_attempts = 2
+# retry_backoff_ms = 100
+# circuit_breaker_failures = 5
+# circuit_breaker_cooldown_secs = 30
 
 [logging]
 level = "info"

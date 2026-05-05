@@ -37,6 +37,14 @@ pub struct ServerConfig {
     pub max_concurrent_requests: Option<usize>,
     #[serde(default)]
     pub rate_limit_per_minute: Option<u64>,
+    #[serde(default)]
+    pub retry_attempts: u32,
+    #[serde(default = "default_retry_backoff_ms")]
+    pub retry_backoff_ms: u64,
+    #[serde(default)]
+    pub circuit_breaker_failures: Option<u64>,
+    #[serde(default = "default_circuit_breaker_cooldown_secs")]
+    pub circuit_breaker_cooldown_secs: u64,
 }
 
 impl Default for ServerConfig {
@@ -47,6 +55,10 @@ impl Default for ServerConfig {
             body_limit_mb: default_body_limit_mb(),
             max_concurrent_requests: None,
             rate_limit_per_minute: None,
+            retry_attempts: 0,
+            retry_backoff_ms: default_retry_backoff_ms(),
+            circuit_breaker_failures: None,
+            circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
         }
     }
 }
@@ -242,6 +254,10 @@ impl Config {
             body_limit_bytes: self.server.body_limit_mb.saturating_mul(1024 * 1024) as usize,
             max_concurrent_requests: self.server.max_concurrent_requests,
             rate_limit_per_minute: self.server.rate_limit_per_minute,
+            retry_attempts: self.server.retry_attempts,
+            retry_backoff_ms: self.server.retry_backoff_ms,
+            circuit_breaker_failures: self.server.circuit_breaker_failures,
+            circuit_breaker_cooldown_secs: self.server.circuit_breaker_cooldown_secs,
             auth_enabled: self.auth.enabled,
             auth_keys,
             per_key_rate_limit_per_minute: self.auth.per_key_rate_limit_per_minute,
@@ -327,6 +343,14 @@ fn default_request_timeout_secs() -> u64 {
 
 fn default_body_limit_mb() -> u64 {
     32
+}
+
+fn default_retry_backoff_ms() -> u64 {
+    100
+}
+
+fn default_circuit_breaker_cooldown_secs() -> u64 {
+    30
 }
 
 fn default_log_level() -> String {

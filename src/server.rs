@@ -30,6 +30,7 @@ pub struct AppState {
     concurrency: Option<Arc<Semaphore>>,
     rate_limiter: Option<RateLimiter>,
     key_limiters: Mutex<HashMap<u64, Arc<KeyLimiter>>>,
+    provider_health: Mutex<HashMap<String, Arc<ProviderHealth>>>,
 }
 
 impl AppState {
@@ -50,6 +51,7 @@ impl AppState {
             concurrency,
             rate_limiter,
             key_limiters: Mutex::new(HashMap::new()),
+            provider_health: Mutex::new(HashMap::new()),
         }
     }
 }
@@ -60,6 +62,10 @@ pub struct ServerOptions {
     pub body_limit_bytes: usize,
     pub max_concurrent_requests: Option<usize>,
     pub rate_limit_per_minute: Option<u64>,
+    pub retry_attempts: u32,
+    pub retry_backoff_ms: u64,
+    pub circuit_breaker_failures: Option<u64>,
+    pub circuit_breaker_cooldown_secs: u64,
     pub auth_enabled: bool,
     pub auth_keys: Vec<String>,
     pub per_key_rate_limit_per_minute: Option<u64>,
@@ -74,6 +80,10 @@ impl Default for ServerOptions {
             body_limit_bytes: 32 * 1024 * 1024,
             max_concurrent_requests: None,
             rate_limit_per_minute: None,
+            retry_attempts: 0,
+            retry_backoff_ms: 100,
+            circuit_breaker_failures: None,
+            circuit_breaker_cooldown_secs: 30,
             auth_enabled: false,
             auth_keys: Vec::new(),
             per_key_rate_limit_per_minute: None,
@@ -101,6 +111,20 @@ struct RateLimiter {
 struct KeyLimiter {
     rate_limiter: Option<RateLimiter>,
     concurrency: Option<Arc<Semaphore>>,
+}
+
+struct ProviderHealth {
+    consecutive_failures: AtomicU64,
+    circuit_opened_at_epoch_secs: AtomicU64,
+}
+
+impl Default for ProviderHealth {
+    fn default() -> Self {
+        Self {
+            consecutive_failures: AtomicU64::new(0),
+            circuit_opened_at_epoch_secs: AtomicU64::new(0),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -465,7 +489,7 @@ async fn chat_with_fallbacks(
     ir_req: &ir::ChatRequest,
 ) -> Result<ir::ChatResponse, AppError> {
     info!(provider = %adapter.provider_name(), model = %ir_req.model, fallback_count = fallbacks.len(), "attempting primary upstream request");
-    match with_timeout(state, adapter.chat(ir_req)).await {
+    match chat_with_resilience(state, &*adapter, ir_req).await {
         Ok(resp) => Ok(resp),
         Err(primary_error) if !fallbacks.is_empty() => {
             warn!(provider = %adapter.provider_name(), error_kind = primary_error.kind, status = %primary_error.status, "primary upstream request failed");
@@ -474,7 +498,7 @@ async fn chat_with_fallbacks(
                 let mut fallback_req = ir_req.clone();
                 fallback_req.model = fallback.model;
                 warn!(provider = %fallback.provider, model = %fallback_req.model, "trying fallback provider");
-                match with_timeout(state, fallback.adapter.chat(&fallback_req)).await {
+                match chat_with_resilience(state, &*fallback.adapter, &fallback_req).await {
                     Ok(resp) => return Ok(resp),
                     Err(err) => {
                         warn!(provider = %fallback.provider, error_kind = err.kind, status = %err.status, "fallback upstream request failed");
@@ -486,6 +510,45 @@ async fn chat_with_fallbacks(
         }
         Err(err) => Err(err),
     }
+}
+
+async fn chat_with_resilience(
+    state: &Arc<AppState>,
+    adapter: &dyn crate::adapter::Adapter,
+    ir_req: &ir::ChatRequest,
+) -> Result<ir::ChatResponse, AppError> {
+    let provider = adapter.provider_name();
+    let health = provider_health(state, provider);
+    if circuit_is_open(state, provider, &health) {
+        state.metrics.inc_error();
+        return Err(AppError::service_unavailable(format!(
+            "provider circuit open: {provider}"
+        )));
+    }
+
+    let attempts = state.options.retry_attempts.saturating_add(1);
+    let mut last_error = None;
+    for attempt in 0..attempts {
+        match with_timeout(state, adapter.chat(ir_req)).await {
+            Ok(resp) => {
+                record_provider_success(&health);
+                return Ok(resp);
+            }
+            Err(err) => {
+                let retryable = err.is_retryable();
+                warn!(provider, attempt = attempt + 1, attempts, retryable, error_kind = err.kind, status = %err.status, "upstream request attempt failed");
+                last_error = Some(err);
+                if !retryable || attempt + 1 >= attempts {
+                    break;
+                }
+                tokio::time::sleep(retry_delay(state, attempt)).await;
+            }
+        }
+    }
+
+    let err = last_error.unwrap_or_else(|| AppError::bad_gateway("upstream request failed".into()));
+    record_provider_failure(state, provider, &health);
+    Err(err)
 }
 
 struct RequestLog<'a> {
@@ -513,6 +576,67 @@ fn log_access(log: RequestLog<'_>) {
         error_kind = log.error_kind.unwrap_or("none"),
         "request completed"
     );
+}
+
+fn provider_health(state: &Arc<AppState>, provider: &str) -> Arc<ProviderHealth> {
+    let mut providers = state
+        .provider_health
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    Arc::clone(
+        providers
+            .entry(provider.to_string())
+            .or_insert_with(|| Arc::new(ProviderHealth::default())),
+    )
+}
+
+fn circuit_is_open(state: &Arc<AppState>, provider: &str, health: &ProviderHealth) -> bool {
+    let Some(_) = state
+        .options
+        .circuit_breaker_failures
+        .filter(|limit| *limit > 0)
+    else {
+        return false;
+    };
+    let opened_at = health.circuit_opened_at_epoch_secs.load(Ordering::Relaxed);
+    if opened_at == 0 {
+        return false;
+    }
+    let now = current_epoch_secs();
+    let cooldown = state.options.circuit_breaker_cooldown_secs;
+    if now.saturating_sub(opened_at) >= cooldown {
+        warn!(provider, "provider circuit half-open after cooldown");
+        return false;
+    }
+    true
+}
+
+fn record_provider_success(health: &ProviderHealth) {
+    health.consecutive_failures.store(0, Ordering::Relaxed);
+    health
+        .circuit_opened_at_epoch_secs
+        .store(0, Ordering::Relaxed);
+}
+
+fn record_provider_failure(state: &Arc<AppState>, provider: &str, health: &ProviderHealth) {
+    let failures = health.consecutive_failures.fetch_add(1, Ordering::Relaxed) + 1;
+    if let Some(limit) = state
+        .options
+        .circuit_breaker_failures
+        .filter(|limit| *limit > 0)
+    {
+        if failures >= limit {
+            health
+                .circuit_opened_at_epoch_secs
+                .store(current_epoch_secs(), Ordering::Relaxed);
+            warn!(provider, failures, limit, "provider circuit opened");
+        }
+    }
+}
+
+fn retry_delay(state: &Arc<AppState>, attempt: u32) -> Duration {
+    let multiplier = 1u64.checked_shl(attempt).unwrap_or(u64::MAX);
+    Duration::from_millis(state.options.retry_backoff_ms.saturating_mul(multiplier))
 }
 
 // ── Health ──────────────────────────────────────────────────────────────────
@@ -703,6 +827,13 @@ fn current_epoch_minute() -> u64 {
         / 60
 }
 
+fn current_epoch_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 // ── Error handling ──────────────────────────────────────────────────────────
 
 #[derive(Debug)]
@@ -742,6 +873,22 @@ impl AppError {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: msg,
             kind: "too_many_requests",
+        }
+    }
+
+    fn bad_gateway(msg: String) -> Self {
+        Self {
+            status: StatusCode::BAD_GATEWAY,
+            message: msg,
+            kind: "upstream_backend",
+        }
+    }
+
+    fn service_unavailable(msg: String) -> Self {
+        Self {
+            status: StatusCode::SERVICE_UNAVAILABLE,
+            message: msg,
+            kind: "circuit_open",
         }
     }
 
@@ -786,6 +933,18 @@ impl AppError {
     }
 }
 
+impl AppError {
+    fn is_retryable(&self) -> bool {
+        matches!(
+            self.status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::BAD_GATEWAY
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::GATEWAY_TIMEOUT
+        )
+    }
+}
+
 impl IntoResponse for AppError {
     fn into_response(self) -> axum::response::Response {
         error!(status = %self.status, error = %self.message, "request failed");
@@ -805,6 +964,11 @@ mod tests {
         fail: bool,
     }
 
+    struct FlakyAdapter {
+        name: &'static str,
+        failures_before_success: AtomicU64,
+    }
+
     #[async_trait]
     impl crate::adapter::Adapter for TestAdapter {
         fn provider_name(&self) -> &str {
@@ -818,6 +982,53 @@ mod tests {
         async fn chat(&self, request: &ir::ChatRequest) -> Result<ir::ChatResponse, AdapterError> {
             if self.fail {
                 return Err(AdapterError::BackendError("primary failed".into()));
+            }
+            Ok(ir::ChatResponse {
+                id: "resp_1".into(),
+                model: request.model.clone(),
+                choices: vec![ir::Choice {
+                    index: 0,
+                    message: Some(ir::Message {
+                        role: ir::Role::Assistant,
+                        content: vec![ir::ContentBlock::Text {
+                            text: self.name.into(),
+                        }],
+                    }),
+                    delta: None,
+                    finish_reason: Some(ir::FinishReason::Stop),
+                }],
+                usage: ir::Usage::default(),
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: &ir::ChatRequest,
+        ) -> Result<
+            std::pin::Pin<
+                Box<dyn futures::Stream<Item = Result<ir::StreamEvent, AdapterError>> + Send>,
+            >,
+            AdapterError,
+        > {
+            Ok(Box::pin(stream::empty()))
+        }
+    }
+
+    #[async_trait]
+    impl crate::adapter::Adapter for FlakyAdapter {
+        fn provider_name(&self) -> &str {
+            self.name
+        }
+
+        fn supports_model(&self, _model: &str) -> bool {
+            true
+        }
+
+        async fn chat(&self, request: &ir::ChatRequest) -> Result<ir::ChatResponse, AdapterError> {
+            let remaining = self.failures_before_success.load(Ordering::Relaxed);
+            if remaining > 0 {
+                self.failures_before_success.fetch_sub(1, Ordering::Relaxed);
+                return Err(AdapterError::BackendError("temporary failure".into()));
             }
             Ok(ir::ChatResponse {
                 id: "resp_1".into(),
@@ -891,6 +1102,114 @@ mod tests {
             state.metrics.upstream_errors_total.load(Ordering::Relaxed),
             1
         );
+    }
+
+    #[tokio::test]
+    async fn retry_succeeds_after_temporary_backend_failure() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                retry_attempts: 1,
+                retry_backoff_ms: 0,
+                circuit_breaker_failures: Some(3),
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+        let adapter = FlakyAdapter {
+            name: "flaky",
+            failures_before_success: AtomicU64::new(1),
+        };
+        let request = test_chat_request("model");
+
+        let response = chat_with_resilience(&state, &adapter, &request)
+            .await
+            .expect("retry should recover");
+
+        assert_eq!(response.model, "model");
+        assert_eq!(adapter.failures_before_success.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            provider_health(&state, "flaky")
+                .consecutive_failures
+                .load(Ordering::Relaxed),
+            0
+        );
+    }
+
+    #[tokio::test]
+    async fn circuit_opens_after_consecutive_provider_failures() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                circuit_breaker_failures: Some(1),
+                circuit_breaker_cooldown_secs: 30,
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+        let adapter = TestAdapter {
+            name: "broken",
+            fail: true,
+        };
+        let request = test_chat_request("model");
+
+        let first = chat_with_resilience(&state, &adapter, &request)
+            .await
+            .expect_err("first failure should open circuit");
+        let second = chat_with_resilience(&state, &adapter, &request)
+            .await
+            .expect_err("open circuit should fail fast");
+
+        assert_eq!(first.kind, "upstream_backend");
+        assert_eq!(second.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(second.kind, "circuit_open");
+    }
+
+    #[tokio::test]
+    async fn fallback_can_handle_open_primary_circuit() {
+        let state = Arc::new(AppState::new(
+            ModelRouter::new(),
+            ServerOptions {
+                circuit_breaker_failures: Some(1),
+                circuit_breaker_cooldown_secs: 30,
+                ..ServerOptions::default()
+            },
+            Metrics::default(),
+        ));
+        let primary = Arc::new(TestAdapter {
+            name: "primary",
+            fail: true,
+        });
+        let fallback = ResolvedFallback {
+            adapter: Arc::new(TestAdapter {
+                name: "backup",
+                fail: false,
+            }),
+            provider: "backup".into(),
+            model: "backup-model".into(),
+        };
+        let request = test_chat_request("primary-model");
+
+        let response = chat_with_fallbacks(&state, primary, vec![fallback], &request)
+            .await
+            .expect("fallback response");
+
+        assert_eq!(response.model, "backup-model");
+    }
+
+    fn test_chat_request(model: &str) -> ir::ChatRequest {
+        ir::ChatRequest {
+            model: model.into(),
+            messages: Vec::new(),
+            system: None,
+            temperature: None,
+            max_tokens: None,
+            stop_sequences: Vec::new(),
+            tools: Vec::new(),
+            tool_choice: None,
+            stream: false,
+            extra: Default::default(),
+        }
     }
 
     #[test]
