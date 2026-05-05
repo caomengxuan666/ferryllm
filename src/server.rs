@@ -422,22 +422,21 @@ fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOp
         return;
     }
 
-    let original = system.clone();
     let mut kept = Vec::new();
-    let mut stripped = Vec::new();
-    for line in original.lines() {
+    let mut stripped_lines = 0usize;
+    for line in system.lines() {
         if options
             .strip_system_line_prefixes
             .iter()
             .any(|prefix| line.starts_with(prefix))
         {
-            stripped.push(line.to_string());
+            stripped_lines += 1;
         } else {
             kept.push(line.to_string());
         }
     }
 
-    if stripped.is_empty() {
+    if stripped_lines == 0 {
         return;
     }
 
@@ -446,20 +445,7 @@ fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOp
         req.system = None;
     }
 
-    for line in stripped {
-        req.messages.push(ir::Message {
-            role: ir::Role::User,
-            content: vec![ContentBlock::Text {
-                text: line,
-                cache_control: None,
-            }],
-        });
-    }
-
-    info!(
-        stripped_lines = req.messages.len(),
-        "stripped system line prefixes into trailing user context"
-    );
+    info!(stripped_lines, "dropped stripped system line prefixes");
 }
 
 fn line_range_intersecting(
@@ -2067,7 +2053,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_system_line_prefixes_moves_only_matching_lines() {
+    fn strip_system_line_prefixes_drops_only_matching_lines() {
         let mut request = test_chat_request("claude-sonnet-4-6");
         request.system = Some(
             "stable heading\nx-anthropic-billing-header: debug\nstable instruction tail".into(),
@@ -2083,13 +2069,7 @@ mod tests {
             request.system.as_deref(),
             Some("stable heading\nstable instruction tail")
         );
-        assert_eq!(request.messages.len(), 1);
-        match &request.messages[0].content[0] {
-            ir::ContentBlock::Text { text, .. } => {
-                assert_eq!(text, "x-anthropic-billing-header: debug");
-            }
-            other => panic!("expected text block, got {other:?}"),
-        }
+        assert!(request.messages.is_empty());
     }
 
     #[test]

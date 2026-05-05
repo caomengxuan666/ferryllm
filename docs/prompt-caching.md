@@ -117,12 +117,12 @@ investigations, `log_relocated_system_text = true` prints the moved text
 verbatim; disable it after confirming the boundary.
 
 For transport metadata or other non-semantic boilerplate, prefer
-`strip_system_line_prefixes`. It removes matching system lines and appends them
-as trailing user context, which is safer than byte slicing when a line boundary
-matters. For example, stripping
+`strip_system_line_prefixes`. It drops matching system lines, which is safer
+than byte slicing when a line boundary matters and prevents transport metadata
+from reaching the model as user content. For example, stripping
 `x-anthropic-billing-header: cc_version=2.1.128.9fd; cc_entrypoint=cli; ...`
-keeps volatile Claude Code metadata out of the stable system prefix while
-preserving the relocated instruction context.
+keeps volatile Claude Code metadata out of both the stable system prefix and
+the conversational context.
 
 ## Request Shape Debugging
 
