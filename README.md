@@ -51,7 +51,8 @@ Example with the config-driven server:
 
 ```bash
 export CODX_API_KEY="your-api-key"
-cargo run --bin ferryllm -- serve --config examples/config/codexapis.toml
+RUST_LOG=ferryllm=trace,tower_http=debug,reqwest=debug \
+  cargo run --features http --bin ferryllm -- serve --config examples/config/codexapis.toml
 ```
 
 In another shell:
@@ -79,6 +80,15 @@ sending chat request provider="openai" model=gpt-5.5
 ```
 
 This means Claude Code is the client, but the backend model used for inference is `gpt-5.5`.
+
+If you want a quick local smoke test before opening Claude Code, run:
+
+```bash
+curl -s http://127.0.0.1:3000/v1/messages \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer local-test-token' \
+  -d '{"model":"cc-gpt55","max_tokens":64,"messages":[{"role":"user","content":"hello"}]}'
+```
 
 ## User-Defined Model Aliases
 

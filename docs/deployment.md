@@ -65,6 +65,22 @@ Recommended deep protocol troubleshooting:
 RUST_LOG=trace ferryllm serve --config ferryllm.toml
 ```
 
+For local Claude Code against codexapis with full trace logs:
+
+```bash
+export CODX_API_KEY="..."
+RUST_LOG=ferryllm=trace,tower_http=debug,reqwest=debug \
+  cargo run --features http --bin ferryllm -- serve --config examples/config/codexapis.toml
+```
+
+Then in another shell:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:3000
+export ANTHROPIC_API_KEY=local-test-token
+claude --model cc-gpt55
+```
+
 Production deployments should prefer JSON logs once supported:
 
 ```toml
