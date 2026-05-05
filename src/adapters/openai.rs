@@ -730,12 +730,18 @@ fn parse_openai_sse_line_events(
             if let Some(reason) = &finish_reason {
                 match reason {
                     FinishReason::ToolCalls => {
-                        for tool_index in tool_state.started.keys().copied().collect::<Vec<_>>() {
+                        let mut indices: Vec<u32> = tool_state.started.keys().copied().collect();
+                        indices.sort_unstable();
+                        for tool_index in indices {
                             events.push(StreamEvent::ContentBlockStop { index: tool_index });
                         }
                         events.push(StreamEvent::MessageDelta {
                             stop_reason: Some("tool_use".into()),
-                            usage: None,
+                            usage: chunk.usage.map(|u| Usage {
+                                prompt_tokens: u.prompt_tokens,
+                                completion_tokens: u.completion_tokens,
+                                total_tokens: u.total_tokens,
+                            }),
                         });
                     }
                     FinishReason::Stop | FinishReason::Length => {

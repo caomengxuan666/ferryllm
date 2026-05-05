@@ -343,7 +343,7 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                     "model": model,
                     "stop_reason": null,
                     "stop_sequence": null,
-                    "usage": null
+                    "usage": {"input_tokens": 0, "output_tokens": 0}
                 }
             });
             Some((
