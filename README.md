@@ -122,6 +122,16 @@ src/
 - `docs/deployment.md`: Deployment model and operational guidance.
 - `docs/load-testing.md`: Local mock-upstream load testing without provider token spend.
 
+## Benchmark Tool
+
+ferryllm ships a benchmark-style load tester similar to `redis-benchmark`.
+
+```bash
+cargo run --release --example load_test --features http -- --protocol anthropic --requests 10000 --concurrency 512
+```
+
+It can target either `/v1/messages` or `/v1/chat/completions`, and it is designed to measure your own server and hardware rather than spend tokens on real providers.
+
 ## Roadmap
 
 - Release packaging for the config-file driven standalone binary.

@@ -1,4 +1,4 @@
-//! Async Rust load tester for ferryllm.
+//! ferryllm-benchmark style async load tester.
 //!
 //! Example:
 //!   cargo run --release --example load_test --features http -- --requests 10000 --concurrency 512
@@ -8,15 +8,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use reqwest::Client;
-use serde_json::json;
+use serde_json::{json, Value};
 use tokio::sync::Semaphore;
 
 #[derive(Clone)]
 struct Args {
     url: String,
+    protocol: Protocol,
+    model: String,
+    prompt: String,
+    max_tokens: u32,
     requests: usize,
     concurrency: usize,
     timeout_secs: u64,
+    bearer: Option<String>,
+}
+
+#[derive(Clone, Copy)]
+enum Protocol {
+    Anthropic,
+    Openai,
 }
 
 #[derive(Debug)]
@@ -43,11 +54,11 @@ async fn main() {
             .acquire_owned()
             .await
             .expect("acquire concurrency permit");
+        let args = args.clone();
         let client = client.clone();
-        let url = args.url.clone();
         tasks.push(tokio::spawn(async move {
             let _permit = permit;
-            request_once(&client, &url).await
+            request_once(&client, &args).await
         }));
     }
 
@@ -59,21 +70,18 @@ async fn main() {
     print_summary(&args, started.elapsed(), &samples);
 }
 
-async fn request_once(client: &Client, url: &str) -> ResultSample {
-    let body = json!({
-        "model": "claude-load-test",
-        "max_tokens": 16,
-        "messages": [{"role": "user", "content": "ping"}],
-    });
+async fn request_once(client: &Client, args: &Args) -> ResultSample {
+    let body = request_body(args);
     let started = Instant::now();
-    let status = match client
-        .post(url)
+    let mut builder = client
+        .post(&args.url)
         .header("content-type", "application/json")
-        .header("authorization", "Bearer load-test")
-        .json(&body)
-        .send()
-        .await
-    {
+        .json(&body);
+    if let Some(token) = &args.bearer {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+
+    let status = match builder.send().await {
         Ok(resp) => {
             let status = resp.status().as_u16();
             let _ = resp.bytes().await;
@@ -85,6 +93,21 @@ async fn request_once(client: &Client, url: &str) -> ResultSample {
     ResultSample {
         status,
         latency_ms: started.elapsed().as_secs_f64() * 1000.0,
+    }
+}
+
+fn request_body(args: &Args) -> Value {
+    match args.protocol {
+        Protocol::Anthropic => json!({
+            "model": args.model,
+            "max_tokens": args.max_tokens,
+            "messages": [{"role": "user", "content": args.prompt}],
+        }),
+        Protocol::Openai => json!({
+            "model": args.model,
+            "max_tokens": args.max_tokens,
+            "messages": [{"role": "user", "content": args.prompt}],
+        }),
     }
 }
 
@@ -104,6 +127,9 @@ fn print_summary(args: &Args, elapsed: Duration, samples: &[ResultSample]) {
     let errors = args.requests.saturating_sub(ok);
     let elapsed_secs = elapsed.as_secs_f64();
     println!("{{");
+    println!("  \"url\": \"{}\",", args.url);
+    println!("  \"protocol\": \"{}\",", args.protocol.as_str());
+    println!("  \"model\": \"{}\",", args.model);
     println!("  \"requests\": {},", args.requests);
     println!("  \"concurrency\": {},", args.concurrency);
     println!("  \"elapsed_seconds\": {:.3},", elapsed_secs);
@@ -131,6 +157,15 @@ fn print_summary(args: &Args, elapsed: Duration, samples: &[ResultSample]) {
     println!("}}");
 }
 
+impl Protocol {
+    fn as_str(self) -> &'static str {
+        match self {
+            Protocol::Anthropic => "anthropic",
+            Protocol::Openai => "openai",
+        }
+    }
+}
+
 fn mean(values: &[f64]) -> f64 {
     if values.is_empty() {
         return 0.0;
@@ -149,36 +184,28 @@ fn percentile(values: &[f64], pct: f64) -> f64 {
 fn parse_args() -> Args {
     let mut args = Args {
         url: "http://127.0.0.1:3000/v1/messages".into(),
+        protocol: Protocol::Anthropic,
+        model: "claude-load-test".into(),
+        prompt: "ping".into(),
+        max_tokens: 16,
         requests: 10_000,
         concurrency: 128,
         timeout_secs: 10,
+        bearer: None,
     };
     let mut iter = std::env::args().skip(1);
 
     while let Some(arg) = iter.next() {
         match arg.as_str() {
             "--url" => args.url = iter.next().expect("--url value"),
-            "--requests" => {
-                args.requests = iter
-                    .next()
-                    .expect("--requests value")
-                    .parse()
-                    .expect("valid --requests")
-            }
-            "--concurrency" => {
-                args.concurrency = iter
-                    .next()
-                    .expect("--concurrency value")
-                    .parse()
-                    .expect("valid --concurrency")
-            }
-            "--timeout" => {
-                args.timeout_secs = iter
-                    .next()
-                    .expect("--timeout value")
-                    .parse()
-                    .expect("valid --timeout")
-            }
+            "--protocol" => args.protocol = parse_protocol(&iter.next().expect("--protocol value")),
+            "--model" => args.model = iter.next().expect("--model value"),
+            "--prompt" => args.prompt = iter.next().expect("--prompt value"),
+            "--max-tokens" => args.max_tokens = parse_next(&mut iter, "--max-tokens"),
+            "--requests" => args.requests = parse_next(&mut iter, "--requests"),
+            "--concurrency" => args.concurrency = parse_next(&mut iter, "--concurrency"),
+            "--timeout" => args.timeout_secs = parse_next(&mut iter, "--timeout"),
+            "--bearer" => args.bearer = Some(iter.next().expect("--bearer value")),
             "--help" | "-h" => {
                 print_help();
                 std::process::exit(0);
@@ -190,6 +217,32 @@ fn parse_args() -> Args {
     args
 }
 
+fn parse_next<T: std::str::FromStr>(iter: &mut impl Iterator<Item = String>, name: &str) -> T {
+    iter.next()
+        .unwrap_or_else(|| panic!("{name} value"))
+        .parse()
+        .unwrap_or_else(|_| panic!("valid {name}"))
+}
+
+fn parse_protocol(value: &str) -> Protocol {
+    match value {
+        "anthropic" => Protocol::Anthropic,
+        "openai" => Protocol::Openai,
+        other => panic!("unknown protocol {other}; expected anthropic or openai"),
+    }
+}
+
 fn print_help() {
-    println!("Usage: load_test [--url URL] [--requests N] [--concurrency N] [--timeout SECS]");
+    println!("Usage: load_test [OPTIONS]");
+    println!();
+    println!("Options:");
+    println!("  --url URL                 Target URL (default: http://127.0.0.1:3000/v1/messages)");
+    println!("  --protocol anthropic|openai  Request body shape (default: anthropic)");
+    println!("  --model MODEL             Model name (default: claude-load-test)");
+    println!("  --prompt TEXT             Prompt text (default: ping)");
+    println!("  --max-tokens N            max_tokens value (default: 16)");
+    println!("  --requests N              Total request count (default: 10000)");
+    println!("  --concurrency N           In-flight request count (default: 128)");
+    println!("  --timeout SECS            Per-request timeout (default: 10)");
+    println!("  --bearer TOKEN            Optional Authorization bearer token");
 }
