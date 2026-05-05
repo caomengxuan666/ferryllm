@@ -120,6 +120,7 @@ src/
 - `docs/configuration.md`: Planned configuration file format.
 - `docs/server-plan.md`: Standalone server and production roadmap.
 - `docs/deployment.md`: Deployment model and operational guidance.
+- `docs/load-testing.md`: Local mock-upstream load testing without provider token spend.
 
 ## Roadmap
 

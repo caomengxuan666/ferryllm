@@ -1,0 +1,27 @@
+[server]
+listen = "127.0.0.1:3000"
+request_timeout_secs = 30
+body_limit_mb = 2
+max_concurrent_requests = 128
+rate_limit_per_minute = 10000
+
+[logging]
+level = "warn"
+format = "text"
+
+[auth]
+enabled = false
+
+[metrics]
+enabled = true
+
+[[providers]]
+name = "mock"
+type = "openai"
+base_url = "http://127.0.0.1:4010"
+api_key_env = "MOCK_OPENAI_API_KEY"
+
+[[routes]]
+match = "*"
+provider = "mock"
+rewrite_model = "mock-model"
