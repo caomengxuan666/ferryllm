@@ -1,8 +1,8 @@
-# Configuration Design
+# Configuration
 
-This document describes the planned configuration model for the standalone ferryllm server.
+This document describes the configuration model for the standalone ferryllm server.
 
-The current repository includes example servers written in Rust. For public release, ferryllm should provide a config-file driven binary so users can run it without writing code:
+ferryllm includes a config-file driven binary, so users can run the server without writing custom Rust code:
 
 ```bash
 ferryllm serve --config ferryllm.toml
@@ -16,7 +16,7 @@ ferryllm serve --config ferryllm.toml
 - Support local proxy use cases and production relay deployments.
 - Allow advanced routing features such as fallback and weighted balancing later without breaking the basic format.
 
-## Recommended Format
+## Format
 
 TOML is recommended for the first public server release.
 

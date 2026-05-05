@@ -58,8 +58,8 @@ src/
 - [x] Model router
 - [x] HTTP server with SSE streaming
 - [ ] Gemini adapter
-- [ ] Stateful tool-call JSON accumulation in streams
+- [x] Stateful tool-call JSON accumulation in streams
 - [ ] Connection pooling & keep-alive
 - [ ] Hot-reload configuration
-- [ ] Observability (tracing / metrics)
-- [ ] Rate limiting
+- [x] Observability (tracing / metrics)
+- [x] Rate limiting

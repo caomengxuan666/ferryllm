@@ -81,7 +81,7 @@ export ANTHROPIC_API_KEY=local-test-token
 claude --model cc-gpt55
 ```
 
-Production deployments should prefer JSON logs once supported:
+Production deployments should prefer JSON logs:
 
 ```toml
 [logging]

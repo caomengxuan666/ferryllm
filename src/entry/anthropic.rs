@@ -343,7 +343,7 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                     "model": model,
                     "stop_reason": null,
                     "stop_sequence": null,
-                    "usage": {"input_tokens": 0, "output_tokens": 0}
+                    "usage": {"input_tokens": 0, "output_tokens": 1}
                 }
             });
             Some((
@@ -408,9 +408,9 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                     "stop_reason": stop_reason,
                     "stop_sequence": null,
                 },
-                "usage": usage.map(|u| serde_json::json!({
-                    "output_tokens": u.completion_tokens
-                }))
+                "usage": {
+                    "output_tokens": usage.map(|u| u.completion_tokens).unwrap_or(0)
+                }
             });
             Some((
                 "message_delta".into(),

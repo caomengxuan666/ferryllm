@@ -2,7 +2,15 @@
 name = "ferryllm"
 version = "0.1.0"
 edition = "2021"
-description = "A universal LLM protocol middleware — ferry your requests between OpenAI, Anthropic, and beyond."
+description = "Universal LLM protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI-compatible backends."
+license = "MIT"
+repository = "https://github.com/caomengxuan666/ferryllm"
+homepage = "https://github.com/caomengxuan666/ferryllm"
+documentation = "https://docs.rs/ferryllm"
+readme = "README.md"
+keywords = ["llm", "openai", "anthropic", "proxy", "gateway"]
+categories = ["web-programming::http-server", "api-bindings", "command-line-utilities"]
+exclude = [".claude/", ".codex/", ".agents/", "target/"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

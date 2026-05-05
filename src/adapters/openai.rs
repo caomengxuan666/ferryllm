@@ -211,6 +211,50 @@ struct ToolBlockBuf {
     fragments: Vec<String>,
 }
 
+impl ToolBlockBuf {
+    fn raw_arguments(&self) -> String {
+        let raw = self.fragments.concat();
+        if raw.trim().is_empty() {
+            "{}".to_string()
+        } else {
+            raw
+        }
+    }
+
+    fn sanitized_arguments(&self) -> String {
+        let raw = self.raw_arguments();
+        let Ok(mut value) = serde_json::from_str::<Value>(&raw) else {
+            return raw;
+        };
+
+        sanitize_tool_arguments(&self.name, &mut value);
+        serde_json::to_string(&value).unwrap_or(raw)
+    }
+}
+
+fn sanitize_tool_arguments(tool_name: &str, value: &mut Value) {
+    if tool_name != "Read" {
+        return;
+    }
+
+    let Value::Object(args) = value else {
+        return;
+    };
+
+    let empty_pages = args
+        .get("pages")
+        .and_then(Value::as_str)
+        .is_some_and(str::is_empty);
+    let non_pdf_path = args
+        .get("file_path")
+        .and_then(Value::as_str)
+        .is_some_and(|path| !path.to_ascii_lowercase().ends_with(".pdf"));
+
+    if empty_pages || non_pdf_path {
+        args.remove("pages");
+    }
+}
+
 pub struct OpenaiAdapter {
     client: Client,
     base_url: String,
@@ -732,6 +776,7 @@ fn parse_openai_sse_line_events(
                         indices.sort_unstable();
                         for ti in indices {
                             let buf = tool_state.tools.remove(&ti).unwrap_or_default();
+                            let partial_json = buf.sanitized_arguments();
                             events.push(StreamEvent::ContentBlockStart {
                                 index: ti,
                                 content_block: ContentBlock::ToolUse {
@@ -740,14 +785,10 @@ fn parse_openai_sse_line_events(
                                     input: Value::Object(Default::default()),
                                 },
                             });
-                            for fragment in buf.fragments {
-                                events.push(StreamEvent::ContentBlockDelta {
-                                    index: ti,
-                                    delta: ContentDelta::InputJSONDelta {
-                                        partial_json: fragment,
-                                    },
-                                });
-                            }
+                            events.push(StreamEvent::ContentBlockDelta {
+                                index: ti,
+                                delta: ContentDelta::InputJSONDelta { partial_json },
+                            });
                             events.push(StreamEvent::ContentBlockStop { index: ti });
                         }
                         events.push(StreamEvent::MessageDelta {
@@ -955,26 +996,33 @@ mod tests {
         )
         .expect("finish events");
 
-        // Events: ContentBlockStart(tool), ContentBlockDelta(arg1),
-        // ContentBlockDelta(arg2), ContentBlockStop, MessageDelta
-        assert_eq!(events.len(), 5);
-        assert!(matches!(
-            events[0],
-            StreamEvent::ContentBlockStart { index: 0, .. }
-        ));
-        assert!(matches!(
-            events[1],
-            StreamEvent::ContentBlockDelta { index: 0, .. }
-        ));
+        // Events: ContentBlockStart(tool), InputJSONDelta, ContentBlockStop, MessageDelta
+        assert_eq!(events.len(), 4);
+        match &events[0] {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlock::ToolUse { input, .. },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(input, &json!({}));
+            }
+            other => panic!("expected tool start with input, got {other:?}"),
+        }
+        match &events[1] {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: ContentDelta::InputJSONDelta { partial_json },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(partial_json, "{\"path\":\"Cargo.toml\"}");
+            }
+            other => panic!("expected tool input delta, got {other:?}"),
+        }
         assert!(matches!(
             events[2],
-            StreamEvent::ContentBlockDelta { index: 0, .. }
-        ));
-        assert!(matches!(
-            events[3],
             StreamEvent::ContentBlockStop { index: 0 }
         ));
-        assert!(matches!(events[4], StreamEvent::MessageDelta { .. }));
+        assert!(matches!(events[3], StreamEvent::MessageDelta { .. }));
     }
 
     #[test]
@@ -993,16 +1041,28 @@ mod tests {
         )
         .expect("parse finish events");
 
-        // ContentBlockStart, ContentBlockDelta, ContentBlockStop, MessageDelta
+        // ContentBlockStart, InputJSONDelta, ContentBlockStop, MessageDelta
         assert_eq!(events.len(), 4);
-        assert!(matches!(
-            events[0],
-            StreamEvent::ContentBlockStart { index: 0, .. }
-        ));
-        assert!(matches!(
-            events[1],
-            StreamEvent::ContentBlockDelta { index: 0, .. }
-        ));
+        match &events[0] {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlock::ToolUse { input, .. },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(input, &json!({}));
+            }
+            other => panic!("expected tool start with input, got {other:?}"),
+        }
+        match &events[1] {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: ContentDelta::InputJSONDelta { partial_json },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(partial_json, "{}");
+            }
+            other => panic!("expected tool input delta, got {other:?}"),
+        }
         assert!(matches!(
             events[2],
             StreamEvent::ContentBlockStop { index: 0 }
@@ -1013,6 +1073,62 @@ mod tests {
                 assert!(usage.is_none());
             }
             other => panic!("expected message delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_read_tool_drops_pages_for_non_pdf_files() {
+        let mut state = OpenAIToolStreamState::default();
+        parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"/tmp/src/lib.rs\",\"limit\":220,\"offset\":1,\"pages\":\"1\"}"}}]}}]}"#,
+            &mut state,
+        )
+        .expect_err("tool delta buffered");
+
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+        )
+        .expect("finish events");
+
+        match &events[1] {
+            StreamEvent::ContentBlockDelta {
+                delta: ContentDelta::InputJSONDelta { partial_json },
+                ..
+            } => {
+                let value: Value = serde_json::from_str(partial_json).expect("tool json");
+                assert_eq!(value["file_path"], "/tmp/src/lib.rs");
+                assert!(value.get("pages").is_none());
+            }
+            other => panic!("expected tool input delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_read_tool_drops_empty_pages_argument() {
+        let mut state = OpenAIToolStreamState::default();
+        parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_read","type":"function","function":{"name":"Read","arguments":"{\"file_path\":\"/tmp/report.pdf\",\"limit\":220,\"offset\":1,\"pages\":\"\"}"}}]}}]}"#,
+            &mut state,
+        )
+        .expect_err("tool delta buffered");
+
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+        )
+        .expect("finish events");
+
+        match &events[1] {
+            StreamEvent::ContentBlockDelta {
+                delta: ContentDelta::InputJSONDelta { partial_json },
+                ..
+            } => {
+                let value: Value = serde_json::from_str(partial_json).expect("tool json");
+                assert_eq!(value["file_path"], "/tmp/report.pdf");
+                assert!(value.get("pages").is_none());
+            }
+            other => panic!("expected tool input delta, got {other:?}"),
         }
     }
 
