@@ -189,8 +189,6 @@ cargo run --release --example load_test --features http -- \
 cargo run --bin ferryllm -- serve --config examples/config/codexapis.toml
 ```
 
-更多缓存命中率、cache-key 稳定性和 Claude Code 最佳实践见 [docs/prompt-caching.md](docs/prompt-caching.md)。
-
 ## Prompt Cache
 
 在当前 Claude Code + Codex relay 组合下，只要 system prefix 稳定、并且把 transport metadata 从前缀中移走，实测缓存读命中率可以到接近 99.8%。
