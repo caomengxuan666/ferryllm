@@ -58,7 +58,9 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn parse_config_path(args: impl Iterator<Item = String>) -> Result<String, Box<dyn std::error::Error>> {
+fn parse_config_path(
+    args: impl Iterator<Item = String>,
+) -> Result<String, Box<dyn std::error::Error>> {
     let mut config_path = None;
     let mut iter = args.peekable();
 

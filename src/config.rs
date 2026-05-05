@@ -45,21 +45,12 @@ impl Default for ServerConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct AuthConfig {
     #[serde(default)]
     pub enabled: bool,
     #[serde(default)]
     pub api_keys_env: Option<String>,
-}
-
-impl Default for AuthConfig {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            api_keys_env: None,
-        }
-    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,20 +108,17 @@ pub struct RouteConfig {
     pub match_type: RouteMatchType,
     pub provider: String,
     #[serde(default)]
+    pub fallback_providers: Vec<String>,
+    #[serde(default)]
     pub rewrite_model: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RouteMatchType {
+    #[default]
     Prefix,
     Exact,
-}
-
-impl Default for RouteMatchType {
-    fn default() -> Self {
-        Self::Prefix
-    }
 }
 
 impl Config {
@@ -141,7 +129,9 @@ impl Config {
 
     pub fn validate(&self) -> Result<(), ConfigError> {
         if self.providers.is_empty() {
-            return Err(ConfigError::Invalid("at least one provider is required".into()));
+            return Err(ConfigError::Invalid(
+                "at least one provider is required".into(),
+            ));
         }
 
         let mut providers = HashSet::new();
@@ -185,6 +175,14 @@ impl Config {
                     route.match_prefix, route.provider
                 )));
             }
+            for fallback in &route.fallback_providers {
+                if !providers.contains(fallback.as_str()) {
+                    return Err(ConfigError::Invalid(format!(
+                        "route '{}' references unknown fallback provider '{}'",
+                        route.match_prefix, fallback
+                    )));
+                }
+            }
         }
 
         if self.auth.enabled {
@@ -214,7 +212,9 @@ impl Config {
         self.validate()?;
         let auth_keys = if self.auth.enabled {
             let env = self.auth.api_keys_env.as_ref().ok_or_else(|| {
-                ConfigError::Invalid("auth.api_keys_env is required when auth.enabled is true".into())
+                ConfigError::Invalid(
+                    "auth.api_keys_env is required when auth.enabled is true".into(),
+                )
             })?;
             let raw = std::env::var(env).map_err(|_| {
                 ConfigError::Invalid(format!(
@@ -254,7 +254,8 @@ impl Config {
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 ProviderType::Anthropic => {
-                    let adapter = Arc::new(AnthropicAdapter::new(provider.base_url.clone(), api_key));
+                    let adapter =
+                        Arc::new(AnthropicAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
             }
@@ -268,10 +269,20 @@ impl Config {
             };
             match route.match_type {
                 RouteMatchType::Prefix => {
-                    router.add_prefix_route(prefix, &route.provider, route.rewrite_model.clone());
+                    router.add_prefix_route_with_fallbacks(
+                        prefix,
+                        &route.provider,
+                        route.rewrite_model.clone(),
+                        route.fallback_providers.clone(),
+                    );
                 }
                 RouteMatchType::Exact => {
-                    router.add_exact_route(prefix, &route.provider, route.rewrite_model.clone());
+                    router.add_exact_route_with_fallbacks(
+                        prefix,
+                        &route.provider,
+                        route.rewrite_model.clone(),
+                        route.fallback_providers.clone(),
+                    );
                 }
             }
         }

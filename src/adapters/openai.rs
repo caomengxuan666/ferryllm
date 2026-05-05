@@ -1,3 +1,4 @@
+use std::collections::{hash_map::Entry, HashMap, VecDeque};
 use std::pin::Pin;
 
 use async_trait::async_trait;
@@ -97,7 +98,11 @@ struct OpenAIFunctionCall {
 #[serde(untagged)]
 enum OpenAIToolChoice {
     Str(String),
-    Tool { #[serde(rename = "type")] ty: String, function: OpenAIToolChoiceFunction },
+    Tool {
+        #[serde(rename = "type")]
+        ty: String,
+        function: OpenAIToolChoiceFunction,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -190,6 +195,11 @@ struct OpenAISseChunk {
     usage: Option<OpenAIUsage>,
 }
 
+#[derive(Debug, Default)]
+struct OpenAIToolStreamState {
+    started: HashMap<u32, String>,
+}
+
 pub struct OpenaiAdapter {
     client: Client,
     base_url: String,
@@ -266,7 +276,9 @@ fn ir_message_to_openai(msg: &Message) -> OpenAIMessage {
     let (content, tool_calls, tool_call_id) = blocks_to_openai(&msg.content);
     // Guard: never send null/empty content to OpenAI-compatible backends.
     let content = match &content {
-        OpenAIContent::Text(s) if s.is_empty() && tool_calls.is_none() && tool_call_id.is_none() => {
+        OpenAIContent::Text(s)
+            if s.is_empty() && tool_calls.is_none() && tool_call_id.is_none() =>
+        {
             OpenAIContent::Text(" ".into())
         }
         _ => content,
@@ -284,7 +296,7 @@ fn ir_message_to_openai_messages(msg: &Message) -> Vec<OpenAIMessage> {
         .content
         .iter()
         .filter_map(|block| match block {
-            ContentBlock::ToolResult { id, content, .. } => Some(OpenAIMessage {
+            ContentBlock::ToolResult { id, content, .. } if !id.is_empty() => Some(OpenAIMessage {
                 role: "tool".into(),
                 content: OpenAIContent::Text(if content.is_empty() {
                     " ".into()
@@ -320,11 +332,17 @@ fn ir_message_to_openai_messages(msg: &Message) -> Vec<OpenAIMessage> {
     messages
 }
 
-fn blocks_to_openai(blocks: &[ContentBlock]) -> (OpenAIContent, Option<Vec<OpenAIToolCall>>, Option<String>) {
+fn blocks_to_openai(
+    blocks: &[ContentBlock],
+) -> (OpenAIContent, Option<Vec<OpenAIToolCall>>, Option<String>) {
     // Check if it's pure text or multipart
     let text_only = blocks.len() == 1 && matches!(blocks[0], ContentBlock::Text { .. });
-    let has_images = blocks.iter().any(|b| matches!(b, ContentBlock::Image { .. }));
-    let has_tool_use = blocks.iter().any(|b| matches!(b, ContentBlock::ToolUse { .. }));
+    let has_images = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::Image { .. }));
+    let has_tool_use = blocks
+        .iter()
+        .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
 
     if has_tool_use {
         let tool_calls: Vec<OpenAIToolCall> = blocks
@@ -341,11 +359,7 @@ fn blocks_to_openai(blocks: &[ContentBlock]) -> (OpenAIContent, Option<Vec<OpenA
                 _ => None,
             })
             .collect();
-        return (
-            OpenAIContent::Text(String::new()),
-            Some(tool_calls),
-            None,
-        );
+        return (OpenAIContent::Text(String::new()), Some(tool_calls), None);
     }
 
     let tool_call_id = blocks.iter().find_map(|b| match b {
@@ -417,11 +431,14 @@ fn openai_response_to_ir(resp: OpenAIResponse) -> ChatResponse {
         })
         .collect();
 
-    let usage = resp.usage.map(|u| Usage {
-        prompt_tokens: u.prompt_tokens,
-        completion_tokens: u.completion_tokens,
-        total_tokens: u.total_tokens,
-    }).unwrap_or_default();
+    let usage = resp
+        .usage
+        .map(|u| Usage {
+            prompt_tokens: u.prompt_tokens,
+            completion_tokens: u.completion_tokens,
+            total_tokens: u.total_tokens,
+        })
+        .unwrap_or_default();
 
     ChatResponse {
         id: resp.id,
@@ -450,7 +467,9 @@ fn openai_message_to_blocks(msg: &OpenAIRespMessage) -> Vec<ContentBlock> {
     }
 
     if blocks.is_empty() {
-        blocks.push(ContentBlock::Text { text: String::new() });
+        blocks.push(ContentBlock::Text {
+            text: String::new(),
+        });
     }
 
     blocks
@@ -477,10 +496,7 @@ fn parse_finish_reason(s: &str) -> FinishReason {
 }
 
 fn summarize_openai_request(req: &OpenAIChatRequest) -> String {
-    let mut summary = format!(
-        "model={}, stream={}, messages=[",
-        req.model, req.stream
-    );
+    let mut summary = format!("model={}, stream={}, messages=[", req.model, req.stream);
     for (index, msg) in req.messages.iter().enumerate() {
         if index > 0 {
             summary.push_str(", ");
@@ -561,7 +577,8 @@ impl Adapter for OpenaiAdapter {
     async fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError>
+    {
         let mut native = ir_to_openai_request(request);
         native.stream = true;
 
@@ -592,9 +609,18 @@ impl Adapter for OpenaiAdapter {
 
         let byte_stream = resp.bytes_stream();
         let event_stream = futures::stream::unfold(
-            (byte_stream, String::new()),
-            |(mut byte_stream, mut buffer)| async move {
+            (
+                byte_stream,
+                String::new(),
+                VecDeque::<StreamEvent>::new(),
+                OpenAIToolStreamState::default(),
+            ),
+            |(mut byte_stream, mut buffer, mut pending, mut tool_state)| async move {
                 loop {
+                    if let Some(event) = pending.pop_front() {
+                        return Some((Ok(event), (byte_stream, buffer, pending, tool_state)));
+                    }
+
                     // Yield complete lines from buffer
                     if let Some(pos) = buffer.find('\n') {
                         let line = buffer[..pos].trim().to_string();
@@ -605,11 +631,14 @@ impl Adapter for OpenaiAdapter {
                         if line == "data: [DONE]" {
                             return None; // stream end
                         }
-                        if let Ok(event) = parse_openai_sse_line(&line) {
-                            return Some((
-                                Ok(event),
-                                (byte_stream, buffer),
-                            ));
+                        if let Ok(events) = parse_openai_sse_line_events(&line, &mut tool_state) {
+                            pending.extend(events);
+                            if let Some(event) = pending.pop_front() {
+                                return Some((
+                                    Ok(event),
+                                    (byte_stream, buffer, pending, tool_state),
+                                ));
+                            }
                         }
                         // unparseable line → skip
                         continue;
@@ -624,7 +653,7 @@ impl Adapter for OpenaiAdapter {
                             warn!(provider = "openai", error = %e, "stream byte read error");
                             return Some((
                                 Err(AdapterError::StreamError(e.to_string())),
-                                (byte_stream, buffer),
+                                (byte_stream, buffer, pending, tool_state),
                             ));
                         }
                         None => return None,
@@ -637,8 +666,10 @@ impl Adapter for OpenaiAdapter {
     }
 }
 
-/// Parse a single complete SSE line (without trailing newline).
-fn parse_openai_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
+fn parse_openai_sse_line_events(
+    line: &str,
+    tool_state: &mut OpenAIToolStreamState,
+) -> Result<Vec<StreamEvent>, AdapterError> {
     let json_str = line.strip_prefix("data: ").unwrap_or(line);
     trace!(provider = "openai", sse_line = %json_str, "parsing sse line");
     let chunk: OpenAISseChunk = serde_json::from_str(json_str)
@@ -647,36 +678,68 @@ fn parse_openai_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
     if let Some(choices) = chunk.choices {
         if let Some(choice) = choices.into_iter().next() {
             let index = choice.index;
-            let _finish_reason = choice.finish_reason.as_deref().map(parse_finish_reason);
+            let finish_reason = choice.finish_reason.as_deref().map(parse_finish_reason);
+            let mut events = Vec::new();
 
-            let (content, _tool_calls) = if let Some(d) = choice.delta {
-                let text = d.content.filter(|s| !s.is_empty());
-                let tcs: Vec<OpenAIToolCallResp> = d
-                    .tool_calls
-                    .iter()
-                    .filter_map(|tc| {
-                        let func = tc.function.as_ref()?;
-                        Some(OpenAIToolCallResp {
-                            id: tc.id.clone().unwrap_or_default(),
-                            ty: tc.ty.clone().unwrap_or_else(|| "function".into()),
-                            function: OpenAIFunctionCallResp {
-                                name: func.name.clone().unwrap_or_default(),
-                                arguments: func.arguments.clone().unwrap_or_default(),
+            if let Some(d) = choice.delta {
+                if let Some(text) = d.content.filter(|s| !s.is_empty()) {
+                    events.push(StreamEvent::ContentBlockDelta {
+                        index,
+                        delta: ContentDelta::TextDelta { text },
+                    });
+                }
+
+                for tc in d.tool_calls {
+                    let tool_index = tc.index;
+                    if let Entry::Vacant(entry) = tool_state.started.entry(tool_index) {
+                        let id = tc
+                            .id
+                            .clone()
+                            .unwrap_or_else(|| format!("tool_call_{tool_index}"));
+                        let name = tc
+                            .function
+                            .as_ref()
+                            .and_then(|func| func.name.clone())
+                            .unwrap_or_default();
+                        entry.insert(id.clone());
+                        events.push(StreamEvent::ContentBlockStart {
+                            index: tool_index,
+                            content_block: ContentBlock::ToolUse {
+                                id,
+                                name,
+                                input: Value::Object(Default::default()),
                             },
-                        })
-                    })
-                    .collect();
-                (text, tcs)
-            } else {
-                (None, vec![])
-            };
+                        });
+                    }
 
-            return Ok(StreamEvent::ContentBlockDelta {
-                index,
-                delta: ContentDelta::TextDelta {
-                    text: content.unwrap_or_default(),
-                },
-            });
+                    if let Some(arguments) = tc
+                        .function
+                        .and_then(|func| func.arguments)
+                        .filter(|arguments| !arguments.is_empty())
+                    {
+                        events.push(StreamEvent::ContentBlockDelta {
+                            index: tool_index,
+                            delta: ContentDelta::InputJSONDelta {
+                                partial_json: arguments,
+                            },
+                        });
+                    }
+                }
+            }
+
+            if matches!(finish_reason, Some(FinishReason::ToolCalls)) {
+                for tool_index in tool_state.started.keys().copied().collect::<Vec<_>>() {
+                    events.push(StreamEvent::ContentBlockStop { index: tool_index });
+                }
+                events.push(StreamEvent::MessageDelta {
+                    stop_reason: Some("tool_use".into()),
+                    usage: None,
+                });
+            }
+
+            if !events.is_empty() {
+                return Ok(events);
+            }
         }
     }
 
@@ -733,10 +796,16 @@ mod tests {
         assert_eq!(tool_calls.len(), 2);
         assert_eq!(tool_calls[0]["id"], "toolu_1");
         assert_eq!(tool_calls[0]["function"]["name"], "read_file");
-        assert_eq!(tool_calls[0]["function"]["arguments"], r#"{"path":"Cargo.toml"}"#);
+        assert_eq!(
+            tool_calls[0]["function"]["arguments"],
+            r#"{"path":"Cargo.toml"}"#
+        );
         assert_eq!(tool_calls[1]["id"], "toolu_2");
         assert_eq!(tool_calls[1]["function"]["name"], "shell");
-        assert_eq!(tool_calls[1]["function"]["arguments"], r#"{"command":["pwd"]}"#);
+        assert_eq!(
+            tool_calls[1]["function"]["arguments"],
+            r#"{"command":["pwd"]}"#
+        );
     }
 
     #[test]
@@ -789,5 +858,115 @@ mod tests {
         assert_eq!(messages[0]["role"], "tool");
         assert_eq!(messages[0]["tool_call_id"], "toolu_empty");
         assert_eq!(messages[0]["content"], " ");
+    }
+
+    #[test]
+    fn empty_tool_result_id_is_not_forwarded_as_tool_message() {
+        let req = base_request(vec![Message {
+            role: Role::User,
+            content: vec![ContentBlock::ToolResult {
+                id: String::new(),
+                content: "orphaned output".into(),
+                is_error: false,
+            }],
+        }]);
+
+        let native = ir_to_openai_request(&req);
+        let value = serde_json::to_value(native).expect("serialize request");
+        let messages = value["messages"].as_array().expect("messages array");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["role"], "user");
+        assert_eq!(messages[0]["content"], " ");
+        assert!(messages[0].get("tool_call_id").is_none());
+    }
+
+    #[test]
+    fn streaming_tool_call_delta_starts_tool_use_and_streams_arguments() {
+        let mut state = OpenAIToolStreamState::default();
+        let line = r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\""}}]}}]}"#;
+
+        let events = parse_openai_sse_line_events(line, &mut state).expect("parse events");
+
+        assert_eq!(events.len(), 2);
+        match &events[0] {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block: ContentBlock::ToolUse { id, name, input },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(id, "call_1");
+                assert_eq!(name, "read_file");
+                assert_eq!(input, &json!({}));
+            }
+            other => panic!("expected tool_use start, got {other:?}"),
+        }
+        match &events[1] {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: ContentDelta::InputJSONDelta { partial_json },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(partial_json, r#"{"path""#);
+            }
+            other => panic!("expected input json delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_tool_call_delta_continues_arguments_without_restarting_block() {
+        let mut state = OpenAIToolStreamState::default();
+        parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{\"path\""}}]}}]}"#,
+            &mut state,
+        )
+        .expect("parse initial events");
+
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":":\"Cargo.toml\"}"}}]}}]}"#,
+            &mut state,
+        )
+        .expect("parse continuation events");
+
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: ContentDelta::InputJSONDelta { partial_json },
+            } => {
+                assert_eq!(*index, 0);
+                assert_eq!(partial_json, r#":"Cargo.toml"}"#);
+            }
+            other => panic!("expected input json delta, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_tool_call_finish_emits_tool_stop_and_message_delta() {
+        let mut state = OpenAIToolStreamState::default();
+        parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"read_file","arguments":"{}"}}]}}]}"#,
+            &mut state,
+        )
+        .expect("parse initial events");
+
+        let events = parse_openai_sse_line_events(
+            r#"data: {"choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}"#,
+            &mut state,
+        )
+        .expect("parse finish events");
+
+        assert_eq!(events.len(), 2);
+        assert!(matches!(
+            events[0],
+            StreamEvent::ContentBlockStop { index: 0 }
+        ));
+        match &events[1] {
+            StreamEvent::MessageDelta { stop_reason, usage } => {
+                assert_eq!(stop_reason.as_deref(), Some("tool_use"));
+                assert!(usage.is_none());
+            }
+            other => panic!("expected message delta, got {other:?}"),
+        }
     }
 }

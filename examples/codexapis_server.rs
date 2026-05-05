@@ -8,17 +8,20 @@ use std::sync::Arc;
 
 use ferryllm::adapters::openai::OpenaiAdapter;
 use ferryllm::router::Router;
-use ferryllm::server::{AppState, Metrics, ServerOptions, build_router};
+use ferryllm::server::{build_router, AppState, Metrics, ServerOptions};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+        )
         .try_init();
 
     let api_key = std::env::var("CODX_API_KEY").expect("CODX_API_KEY not set");
-    let base_url = std::env::var("CODX_BASE_URL").unwrap_or_else(|_| "https://codexapis.com".into());
+    let base_url =
+        std::env::var("CODX_BASE_URL").unwrap_or_else(|_| "https://codexapis.com".into());
 
     tracing::info!(base_url = %base_url, "starting codexapis proxy");
 
@@ -51,13 +54,13 @@ async fn main() {
 
     println!("=== ferryllm + codexapis ===");
     println!("listening on http://0.0.0.0:3000");
-    println!("");
+    println!();
     println!("Test with curl:");
     println!("  # OpenAI format (native)");
     println!("  curl -s http://localhost:3000/v1/chat/completions \\");
     println!("    -H 'Content-Type: application/json' \\");
     println!("    -d '{{\"model\":\"gpt-5.5\",\"messages\":[{{\"role\":\"user\",\"content\":\"Hi\"}}]}}' | jq .");
-    println!("");
+    println!();
     println!("  # Anthropic format (Claude Code compatible!)");
     println!("  curl -s http://localhost:3000/v1/messages \\");
     println!("    -H 'Content-Type: application/json' \\");

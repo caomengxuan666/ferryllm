@@ -64,7 +64,11 @@ enum AnthropicContentBlock {
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
@@ -92,9 +96,19 @@ struct AnthropicTool {
 #[derive(Debug, Serialize)]
 #[serde(untagged)]
 enum AnthropicToolChoice {
-    Auto { #[serde(rename = "type")] ty: String },
-    Any { #[serde(rename = "type")] ty: String },
-    Tool { #[serde(rename = "type")] ty: String, name: String },
+    Auto {
+        #[serde(rename = "type")]
+        ty: String,
+    },
+    Any {
+        #[serde(rename = "type")]
+        ty: String,
+    },
+    Tool {
+        #[serde(rename = "type")]
+        ty: String,
+        name: String,
+    },
     None,
 }
 
@@ -119,7 +133,11 @@ enum AnthropicRespBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
 }
@@ -143,10 +161,7 @@ enum AnthropicSseEvent {
         content_block: AnthropicContentBlockStream,
     },
     #[serde(rename = "content_block_delta")]
-    ContentBlockDelta {
-        index: u32,
-        delta: AnthropicDelta,
-    },
+    ContentBlockDelta { index: u32, delta: AnthropicDelta },
     #[serde(rename = "content_block_stop")]
     ContentBlockStop { index: u32 },
     #[serde(rename = "message_delta")]
@@ -171,13 +186,18 @@ enum AnthropicContentBlockStream {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     #[serde(rename = "thinking")]
     Thinking { thinking: String },
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "type")]
+#[allow(clippy::enum_variant_names)]
 enum AnthropicDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },
@@ -226,7 +246,10 @@ impl AnthropicAdapter {
 // --- Translation: IR → Anthropic ---
 
 fn ir_to_anthropic_request(req: &ChatRequest) -> AnthropicRequest {
-    let system = req.system.as_ref().map(|s| AnthropicSystem { text: s.clone() });
+    let system = req
+        .system
+        .as_ref()
+        .map(|s| AnthropicSystem { text: s.clone() });
 
     let messages: Vec<AnthropicMessage> = req
         .messages
@@ -299,10 +322,7 @@ fn blocks_to_anthropic(blocks: &[ContentBlock]) -> AnthropicContent {
         .iter()
         .filter_map(|b| match b {
             ContentBlock::Text { text } => Some(AnthropicContentBlock::Text { text: text.clone() }),
-            ContentBlock::Image {
-                source,
-                media_type,
-            } => {
+            ContentBlock::Image { source, media_type } => {
                 let data = match source {
                     ImageSource::Base64 { data } => data.clone(),
                     ImageSource::Url { .. } => {
@@ -319,20 +339,20 @@ fn blocks_to_anthropic(blocks: &[ContentBlock]) -> AnthropicContent {
                     },
                 })
             }
-            ContentBlock::ToolUse { id, name, input } => {
-                Some(AnthropicContentBlock::ToolUse {
-                    id: id.clone(),
-                    name: name.clone(),
-                    input: input.clone(),
-                })
-            }
-            ContentBlock::ToolResult { id, content, is_error } => {
-                Some(AnthropicContentBlock::ToolResult {
-                    tool_use_id: id.clone(),
-                    content: content.clone(),
-                    is_error: if *is_error { Some(true) } else { None },
-                })
-            }
+            ContentBlock::ToolUse { id, name, input } => Some(AnthropicContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            }),
+            ContentBlock::ToolResult {
+                id,
+                content,
+                is_error,
+            } => Some(AnthropicContentBlock::ToolResult {
+                tool_use_id: id.clone(),
+                content: content.clone(),
+                is_error: if *is_error { Some(true) } else { None },
+            }),
             ContentBlock::Thinking { .. } | ContentBlock::RedactedThinking => None,
         })
         .collect();
@@ -343,11 +363,7 @@ fn blocks_to_anthropic(blocks: &[ContentBlock]) -> AnthropicContent {
 // --- Translation: Anthropic → IR ---
 
 fn anthropic_response_to_ir(resp: AnthropicResponse) -> ChatResponse {
-    let content: Vec<ContentBlock> = resp
-        .content
-        .iter()
-        .map(anthropic_block_to_ir)
-        .collect();
+    let content: Vec<ContentBlock> = resp.content.iter().map(anthropic_block_to_ir).collect();
 
     let finish_reason = match resp.stop_reason.as_deref() {
         Some("end_turn") => FinishReason::Stop,
@@ -441,7 +457,8 @@ impl Adapter for AnthropicAdapter {
     async fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError>
+    {
         let mut native = ir_to_anthropic_request(request);
         native.stream = true;
 

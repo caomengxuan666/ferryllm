@@ -62,7 +62,11 @@ pub enum AnthropicContentBlock {
     #[serde(rename = "image")]
     Image { source: AnthropicImageSource },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
     #[serde(rename = "tool_result")]
     ToolResult {
         tool_use_id: String,
@@ -110,7 +114,11 @@ pub enum AnthropicRespBlock {
     #[serde(rename = "text")]
     Text { text: String },
     #[serde(rename = "tool_use")]
-    ToolUse { id: String, name: String, input: Value },
+    ToolUse {
+        id: String,
+        name: String,
+        input: Value,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -124,11 +132,7 @@ pub struct AnthropicRespUsage {
 pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
     let system = extract_anthropic_system(&req.system);
 
-    let messages: Vec<Message> = req
-        .messages
-        .iter()
-        .map(anthropic_message_to_ir)
-        .collect();
+    let messages: Vec<Message> = req.messages.iter().map(anthropic_message_to_ir).collect();
 
     let tools: Vec<Tool> = req
         .tools
@@ -144,7 +148,10 @@ pub fn anthropic_to_ir(req: &AnthropicMessageRequest) -> ChatRequest {
         })
         .unwrap_or_default();
 
-    let tool_choice = req.tool_choice.as_ref().and_then(parse_anthropic_tool_choice);
+    let tool_choice = req
+        .tool_choice
+        .as_ref()
+        .and_then(parse_anthropic_tool_choice);
 
     ChatRequest {
         model: req.model.clone(),
@@ -166,12 +173,16 @@ fn extract_anthropic_system(system: &Option<AnthropicSystemText>) -> Option<Stri
         Some(AnthropicSystemText::Array(parts)) => {
             let text: String = parts
                 .iter()
-                .filter_map(|p| match p {
-                    AnthropicSystemPart::Text { text } => Some(text.as_str()),
+                .map(|p| match p {
+                    AnthropicSystemPart::Text { text } => text.as_str(),
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            if text.is_empty() { None } else { Some(text) }
+            if text.is_empty() {
+                None
+            } else {
+                Some(text)
+            }
         }
         None => None,
     }
@@ -191,29 +202,23 @@ fn anthropic_message_to_ir(msg: &AnthropicMessage) -> Message {
 fn anthropic_content_to_blocks(content: &AnthropicContent) -> Vec<ContentBlock> {
     match content {
         AnthropicContent::Text(text) => {
-            vec![ContentBlock::Text {
-                text: text.clone(),
-            }]
+            vec![ContentBlock::Text { text: text.clone() }]
         }
         AnthropicContent::Blocks(blocks) => blocks
             .iter()
             .map(|b| match b {
-                AnthropicContentBlock::Text { text } => ContentBlock::Text {
-                    text: text.clone(),
-                },
+                AnthropicContentBlock::Text { text } => ContentBlock::Text { text: text.clone() },
                 AnthropicContentBlock::Image { source } => ContentBlock::Image {
                     source: ImageSource::Base64 {
                         data: source.data.clone(),
                     },
                     media_type: source.media_type.clone(),
                 },
-                AnthropicContentBlock::ToolUse { id, name, input } => {
-                    ContentBlock::ToolUse {
-                        id: id.clone(),
-                        name: name.clone(),
-                        input: input.clone(),
-                    }
-                }
+                AnthropicContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                    id: id.clone(),
+                    name: name.clone(),
+                    input: input.clone(),
+                },
                 AnthropicContentBlock::ToolResult {
                     tool_use_id,
                     content,
@@ -223,9 +228,7 @@ fn anthropic_content_to_blocks(content: &AnthropicContent) -> Vec<ContentBlock> 
                         Value::String(s) => s.clone(),
                         Value::Array(parts) => parts
                             .iter()
-                            .filter_map(|p| {
-                                p.get("text").and_then(|t| t.as_str())
-                            })
+                            .filter_map(|p| p.get("text").and_then(|t| t.as_str()))
                             .collect::<Vec<_>>()
                             .join(""),
                         _ => String::new(),
@@ -256,11 +259,13 @@ fn parse_anthropic_tool_choice(value: &Value) -> Option<ToolChoice> {
                 match ty {
                     "auto" => Some(ToolChoice::Auto),
                     "any" => Some(ToolChoice::Any),
-                    "tool" => obj.get("name").and_then(|n| n.as_str()).map(|name| {
-                        ToolChoice::Tool {
-                            name: name.to_string(),
-                        }
-                    }),
+                    "tool" => {
+                        obj.get("name")
+                            .and_then(|n| n.as_str())
+                            .map(|name| ToolChoice::Tool {
+                                name: name.to_string(),
+                            })
+                    }
                     _ => None,
                 }
             } else {
@@ -282,9 +287,9 @@ pub fn ir_to_anthropic_response(ir: ChatResponse) -> AnthropicMessageResponse {
             m.content
                 .iter()
                 .filter_map(|b| match b {
-                    ContentBlock::Text { text } => Some(AnthropicRespBlock::Text {
-                        text: text.clone(),
-                    }),
+                    ContentBlock::Text { text } => {
+                        Some(AnthropicRespBlock::Text { text: text.clone() })
+                    }
                     ContentBlock::ToolUse { id, name, input } => {
                         Some(AnthropicRespBlock::ToolUse {
                             id: id.clone(),
@@ -370,10 +375,7 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                 }),
                 ContentDelta::InputJSONDelta { partial_json } => ("input_json_delta", {
                     let mut map = serde_json::Map::new();
-                    map.insert(
-                        "partial_json".into(),
-                        Value::String(partial_json),
-                    );
+                    map.insert("partial_json".into(), Value::String(partial_json));
                     map
                 }),
             };
@@ -398,10 +400,7 @@ pub fn ir_to_anthropic_sse(event: StreamEvent) -> Option<(String, String)> {
                 serde_json::to_string(&json).unwrap_or_default(),
             ))
         }
-        StreamEvent::MessageDelta {
-            stop_reason,
-            usage,
-        } => {
+        StreamEvent::MessageDelta { stop_reason, usage } => {
             let json = serde_json::json!({
                 "type": "message_delta",
                 "delta": {

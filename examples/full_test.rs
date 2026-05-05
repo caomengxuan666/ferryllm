@@ -23,7 +23,9 @@ fn simple_req(model: &str, prompt: &str) -> ChatRequest {
         model: model.into(),
         messages: vec![Message {
             role: Role::User,
-            content: vec![ContentBlock::Text { text: prompt.into() }],
+            content: vec![ContentBlock::Text {
+                text: prompt.into(),
+            }],
         }],
         system: None,
         temperature: None,
@@ -39,14 +41,23 @@ fn simple_req(model: &str, prompt: &str) -> ChatRequest {
 macro_rules! test_model {
     ($adapter:expr, $model:expr, $label:expr) => {
         println!("  {} ({}):", $label, $model);
-        match $adapter.chat(&simple_req($model, "Reply with a single short sentence.")).await {
+        match $adapter
+            .chat(&simple_req($model, "Reply with a single short sentence."))
+            .await
+        {
             Ok(resp) => {
-                let text = resp.choices.first()
+                let text = resp
+                    .choices
+                    .first()
                     .and_then(|c| c.message.as_ref())
-                    .and_then(|m| m.content.iter().find_map(|b| match b {
-                        ContentBlock::Text { text } if !text.is_empty() => Some(text.trim().to_string()),
-                        _ => None,
-                    }))
+                    .and_then(|m| {
+                        m.content.iter().find_map(|b| match b {
+                            ContentBlock::Text { text } if !text.is_empty() => {
+                                Some(text.trim().to_string())
+                            }
+                            _ => None,
+                        })
+                    })
                     .unwrap_or_else(|| "(no text)".into());
                 println!("    -> {}", text);
             }
@@ -92,7 +103,10 @@ async fn main() {
         match openai.chat(&ir_req).await {
             Ok(ir_resp) => {
                 let anthro_resp = anthropic::ir_to_anthropic_response(ir_resp);
-                println!("    -> {}", serde_json::to_string_pretty(&anthro_resp).unwrap());
+                println!(
+                    "    -> {}",
+                    serde_json::to_string_pretty(&anthro_resp).unwrap()
+                );
             }
             Err(e) => println!("    -> ERROR: {}", e),
         }

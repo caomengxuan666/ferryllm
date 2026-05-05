@@ -73,17 +73,32 @@ level = "info"
 format = "json"
 ```
 
-## Docker Plan
+## Docker
 
-A production Docker image should support:
+Build the image locally:
+
+```bash
+docker build -t ferryllm:local .
+```
+
+Run with the example Codex APIs config:
+
+```bash
+docker run --rm \
+  -p 3000:3000 \
+  -e CODX_API_KEY="..." \
+  ferryllm:local
+```
+
+Run with a custom config:
 
 ```bash
 docker run --rm \
   -p 3000:3000 \
   -e CODX_API_KEY="..." \
   -v ./ferryllm.toml:/etc/ferryllm/config.toml:ro \
-  ferryllm/ferryllm:latest \
-  ferryllm serve --config /etc/ferryllm/config.toml
+  ferryllm:local \
+  serve --config /etc/ferryllm/config.toml
 ```
 
 Recommended container behavior:

@@ -194,7 +194,10 @@ pub fn openai_to_ir(req: &OpenAIChatRequest) -> ChatRequest {
 
     let stop_sequences = match &req.stop {
         Some(Value::String(s)) => vec![s.clone()],
-        Some(Value::Array(arr)) => arr.iter().filter_map(|v| v.as_str().map(String::from)).collect(),
+        Some(Value::Array(arr)) => arr
+            .iter()
+            .filter_map(|v| v.as_str().map(String::from))
+            .collect(),
         _ => vec![],
     };
 
@@ -249,10 +252,8 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
     // Content blocks
     if let Some(content) = &msg.content {
         match content {
-            Value::String(text) => {
-                if !text.is_empty() {
-                    blocks.push(ContentBlock::Text { text: text.clone() });
-                }
+            Value::String(text) if !text.is_empty() => {
+                blocks.push(ContentBlock::Text { text: text.clone() });
             }
             Value::Array(parts) => {
                 for part in parts {
@@ -267,7 +268,8 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
                             }
                             "image_url" => {
                                 if let Some(image_url) = part.get("image_url") {
-                                    if let Some(url) = image_url.get("url").and_then(|u| u.as_str()) {
+                                    if let Some(url) = image_url.get("url").and_then(|u| u.as_str())
+                                    {
                                         blocks.push(ContentBlock::Image {
                                             source: ImageSource::Url {
                                                 url: url.to_string(),
@@ -292,8 +294,7 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
     // Tool calls (assistant messages)
     if let Some(tool_calls) = &msg.tool_calls {
         for tc in tool_calls {
-            let input: Value =
-                serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
+            let input: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
             blocks.push(ContentBlock::ToolUse {
                 id: tc.id.clone(),
                 name: tc.function.name.clone(),
@@ -328,7 +329,10 @@ fn openai_message_to_ir(msg: &OpenAIMessage) -> Message {
         });
     }
 
-    Message { role, content: blocks }
+    Message {
+        role,
+        content: blocks,
+    }
 }
 
 fn parse_openai_tool_choice(value: &Value) -> Option<ToolChoice> {
@@ -444,11 +448,7 @@ fn finish_reason_to_openai(fr: &FinishReason) -> String {
 // --- SSE translation ---
 
 /// Convert a unified StreamEvent into an OpenAI-style SSE `data:` line.
-pub fn ir_to_openai_sse(
-    event: StreamEvent,
-    message_id: &str,
-    model: &str,
-) -> Option<String> {
+pub fn ir_to_openai_sse(event: StreamEvent, message_id: &str, model: &str) -> Option<String> {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     let created = SystemTime::now()

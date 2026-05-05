@@ -63,6 +63,7 @@ rewrite_model = "gpt-5.5"
 match = "claude-"
 provider = "codexapis"
 rewrite_model = "gpt-5.5"
+fallback_providers = ["backup-openai"]
 
 [[routes]]
 match = "gpt-"
@@ -155,6 +156,7 @@ Route fields:
 - `match_type`: Optional. `prefix` by default, or `exact` for user-defined model aliases.
 - `provider`: Provider name.
 - `rewrite_model`: Optional backend model override.
+- `fallback_providers`: Optional provider names tried in order for non-streaming requests when the primary provider fails.
 
 Routes should be evaluated by longest-prefix match. This lets specific rules override broad defaults.
 
@@ -186,11 +188,37 @@ rewrite_model = "gpt-5.5"
 
 This is useful for clients such as Claude Code, which send Anthropic model names even when the backend is not Anthropic.
 
+## Fallback Routing
+
+Simple fallback routing is supported for non-streaming requests:
+
+```toml
+[[providers]]
+name = "primary"
+type = "openai"
+base_url = "https://primary.example.com"
+api_key_env = "PRIMARY_API_KEY"
+
+[[providers]]
+name = "backup"
+type = "openai"
+base_url = "https://backup.example.com"
+api_key_env = "BACKUP_API_KEY"
+
+[[routes]]
+match = "claude-"
+provider = "primary"
+rewrite_model = "gpt-5.5"
+fallback_providers = ["backup"]
+```
+
+Fallbacks use the same rewritten backend model. Streaming fallback is intentionally not attempted after a stream has started.
+
 ## Future Route Strategies
 
 The basic route format should leave room for advanced strategies.
 
-Fallback example:
+Advanced fallback example:
 
 ```toml
 [[routes]]

@@ -15,10 +15,7 @@ pub enum AdapterError {
     #[error("stream error: {0}")]
     StreamError(String),
     #[error("feature not supported: {feature} (provider: {provider})")]
-    UnsupportedFeature {
-        provider: String,
-        feature: String,
-    },
+    UnsupportedFeature { provider: String, feature: String },
 }
 
 /// The core trait every provider backend implements.
@@ -69,7 +66,8 @@ impl<T: Adapter + ?Sized> Adapter for Box<T> {
     async fn chat_stream(
         &self,
         request: &ChatRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError>
+    {
         (**self).chat_stream(request).await
     }
 }

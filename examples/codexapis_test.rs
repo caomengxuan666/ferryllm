@@ -77,14 +77,16 @@ async fn main() {
         "max_tokens": 50
     });
 
-    let entry_req: openai::OpenAIChatRequest =
-        serde_json::from_value(openai_body).unwrap();
+    let entry_req: openai::OpenAIChatRequest = serde_json::from_value(openai_body).unwrap();
     let ir_req = openai::openai_to_ir(&entry_req);
 
     match adapter.chat(&ir_req).await {
         Ok(ir_resp) => {
             let openai_resp = openai::ir_to_openai_response(ir_resp);
-            println!("  response: {}", serde_json::to_string_pretty(&openai_resp).unwrap());
+            println!(
+                "  response: {}",
+                serde_json::to_string_pretty(&openai_resp).unwrap()
+            );
         }
         Err(e) => println!("  ERROR: {}", e),
     }
@@ -116,7 +118,10 @@ async fn main() {
     match adapter.chat(&ir_req).await {
         Ok(ir_resp) => {
             let anthro_resp = anthropic::ir_to_anthropic_response(ir_resp);
-            println!("  response: {}", serde_json::to_string_pretty(&anthro_resp).unwrap());
+            println!(
+                "  response: {}",
+                serde_json::to_string_pretty(&anthro_resp).unwrap()
+            );
         }
         Err(e) => println!("  ERROR: {}", e),
     }
