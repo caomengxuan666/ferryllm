@@ -397,9 +397,8 @@ fn summarize_responses_input_item(index: usize, item: &ResponsesInputItem) -> St
     let mut parts = Vec::with_capacity(item.content.len());
     for part in &item.content {
         let text = match part {
-            ResponsesContentPart::InputText { text } | ResponsesContentPart::OutputText { text } => {
-                text
-            }
+            ResponsesContentPart::InputText { text }
+            | ResponsesContentPart::OutputText { text } => text,
         };
         if item.role == "system" {
             parts.push(format!(
@@ -516,10 +515,7 @@ impl Adapter for OpenaiResponsesAdapter {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let _ = tx.send(Ok(StreamEvent::MessageStart {
-                message_id,
-                model,
-            }));
+            let _ = tx.send(Ok(StreamEvent::MessageStart { message_id, model }));
             let mut buffer = String::new();
             let mut text_started = false;
             let mut tool_index = 1u32;

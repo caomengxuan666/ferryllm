@@ -28,7 +28,7 @@ toml = "0.9"
 tiktoken-rs = { version = "0.11", optional = true }
 
 [features]
-default = ["http", "prompt-observability"]
+default = ["http", "prompt-observability", "openai-responses"]
 http = []
 prompt-observability = ["dep:tiktoken-rs"]
 openai-responses = []
