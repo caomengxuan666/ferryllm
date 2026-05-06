@@ -147,6 +147,10 @@ base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 ```
 
+If you want the Responses path to be the default example, use
+`type = "openai_responses"` in your config. Keep the legacy `openai` variant as
+the commented fallback if you need the older Chat Completions path.
+
 Provider fields:
 
 - `name`: Unique provider name used by routes.

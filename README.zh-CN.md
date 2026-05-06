@@ -155,9 +155,12 @@ strip_system_line_prefixes = ["x-anthropic-billing-header:"]
 
 [[providers]]
 name = "codexapis"
-type = "openai"
+# 目前控制思考强度的默认路径。
+type = "openai_responses"
 base_url = "https://codexapis.com"
 api_key_env = "CODX_API_KEY"
+# 如果你想继续使用旧的 Chat Completions 路径，把这里改回：
+# type = "openai"
 
 [[routes]]
 match = "cc-gpt55"

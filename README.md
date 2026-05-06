@@ -155,9 +155,12 @@ strip_system_line_prefixes = ["x-anthropic-billing-header:"]
 
 [[providers]]
 name = "codexapis"
-type = "openai"
+# Default path for controlling reasoning effort today.
+type = "openai_responses"
 base_url = "https://codexapis.com"
 api_key_env = "CODX_API_KEY"
+# If you want the legacy Chat Completions path instead, switch this back to:
+# type = "openai"
 
 [[routes]]
 match = "cc-gpt55"
