@@ -2,6 +2,19 @@
 
 All notable changes to ferryllm are documented here.
 
+## 0.1.4 - 2026-05-06
+
+### Added
+
+- Optional OpenAI Responses adapter path for upstream reasoning control.
+- Default configuration and docs for routing OpenAI-compatible providers through
+  `/v1/responses`.
+
+### Changed
+
+- Default docs now show `openai_responses` as the recommended provider type for
+  controlling effort.
+
 ## 0.1.3 - 2026-05-06
 
 ### Added
