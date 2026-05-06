@@ -169,6 +169,7 @@ pub struct ProviderConfig {
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
     Openai,
+    #[serde(rename = "openai_responses")]
     #[cfg(feature = "openai-responses")]
     OpenaiResponses,
     Anthropic,
