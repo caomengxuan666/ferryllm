@@ -190,6 +190,21 @@ Check a config without starting the server:
 ferryllm check-config --config examples/config/codexapis.toml
 ```
 
+## Reasoning Effort
+
+Set the default model reasoning depth in TOML:
+
+```toml
+[server]
+default_reasoning_effort = "medium"
+```
+
+Valid values are `none`, `low`, `medium`, `high`, `xhigh`, and `x_high`.
+
+This default is applied only when the client request does not already include an explicit reasoning or thinking control. For Claude Code today, changing this in TOML is the practical way to control the forwarded OpenAI-compatible `reasoning.effort`.
+
+Run with debug logging and look for `reasoning=effort=...` in the outbound request-shape log to confirm what ferryllm sent upstream.
+
 ## API Surface
 
 | Endpoint | Purpose |

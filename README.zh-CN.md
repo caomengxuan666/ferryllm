@@ -190,6 +190,21 @@ rewrite_model = "gpt-5.4"
 ferryllm check-config --config examples/config/codexapis.toml
 ```
 
+## 思考强度
+
+在 TOML 里设置默认模型思考强度：
+
+```toml
+[server]
+default_reasoning_effort = "medium"
+```
+
+可选值是 `none`、`low`、`medium`、`high`、`xhigh` 和 `x_high`。
+
+这个默认值只会在客户端请求没有显式携带 reasoning 或 thinking 控制时生效。对现在的 Claude Code 场景来说，通过 TOML 改这个值，是控制转发到 OpenAI-compatible 后端的 `reasoning.effort` 的实际方式。
+
+排查时可以开启 debug 日志，在 outbound request-shape 日志里看 `reasoning=effort=...`，确认 ferryllm 实际发给上游的值。
+
 ## 接口
 
 | Endpoint | 用途 |
