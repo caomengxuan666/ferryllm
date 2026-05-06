@@ -1,0 +1,52 @@
+[server]
+listen = "0.0.0.0:3000"
+request_timeout_secs = 120
+body_limit_mb = 32
+default_reasoning_effort = "high"
+
+[logging]
+level = "debug"
+format = "text"
+
+[auth]
+enabled = false
+
+[metrics]
+enabled = true
+
+[prompt_cache]
+auto_inject_anthropic_cache_control = true
+cache_system = true
+cache_tools = true
+cache_last_user_message = true
+openai_prompt_cache_key = "ferryllm"
+debug_log_request_shape = true
+relocate_system_prefix_range = "0..1"
+log_relocated_system_text = false
+strip_system_line_prefixes = ["x-anthropic-billing-header:"]
+
+[[providers]]
+name = "codexapis"
+type = "openai_responses"
+base_url = "https://codexapis.com"
+api_key_env = "CODX_API_KEY"
+
+[[routes]]
+match = "cc-gpt55"
+match_type = "exact"
+provider = "codexapis"
+rewrite_model = "gpt-5.4"
+
+[[routes]]
+match = "claude-"
+provider = "codexapis"
+rewrite_model = "gpt-5.4"
+
+[[routes]]
+match = "gpt-"
+provider = "codexapis"
+
+[[routes]]
+match = "*"
+provider = "codexapis"
+rewrite_model = "gpt-5.4"

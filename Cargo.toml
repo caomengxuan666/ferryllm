@@ -31,3 +31,4 @@ tiktoken-rs = { version = "0.11", optional = true }
 default = ["http", "prompt-observability"]
 http = []
 prompt-observability = ["dep:tiktoken-rs"]
+openai-responses = []

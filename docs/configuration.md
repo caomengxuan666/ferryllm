@@ -136,10 +136,21 @@ base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 ```
 
+When built with `--features openai-responses`, an OpenAI-compatible provider can
+also send upstream requests to `/v1/responses`:
+
+```toml
+[[providers]]
+name = "openai-responses"
+type = "openai_responses"
+base_url = "https://api.openai.com"
+api_key_env = "OPENAI_API_KEY"
+```
+
 Provider fields:
 
 - `name`: Unique provider name used by routes.
-- `type`: Adapter type, for example `openai` or `anthropic`.
+- `type`: Adapter type, for example `openai`, `openai_responses`, or `anthropic`.
 - `base_url`: Provider base URL without endpoint path rewriting in routes.
 - `api_key_env`: Environment variable containing the secret.
 

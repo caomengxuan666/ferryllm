@@ -7,6 +7,8 @@ use serde::Deserialize;
 
 use crate::adapter::AdapterError;
 use crate::adapters::{anthropic::AnthropicAdapter, openai::OpenaiAdapter};
+#[cfg(feature = "openai-responses")]
+use crate::adapters::openai_responses::OpenaiResponsesAdapter;
 use crate::ir::ReasoningEffort;
 use crate::router::Router;
 
@@ -167,6 +169,8 @@ pub struct ProviderConfig {
 #[serde(rename_all = "lowercase")]
 pub enum ProviderType {
     Openai,
+    #[cfg(feature = "openai-responses")]
+    OpenaiResponses,
     Anthropic,
 }
 
@@ -351,6 +355,14 @@ impl Config {
             match provider.provider_type {
                 ProviderType::Openai => {
                     let adapter = Arc::new(OpenaiAdapter::new(provider.base_url.clone(), api_key));
+                    router.register_adapter_as(&provider.name, adapter);
+                }
+                #[cfg(feature = "openai-responses")]
+                ProviderType::OpenaiResponses => {
+                    let adapter = Arc::new(OpenaiResponsesAdapter::new(
+                        provider.base_url.clone(),
+                        api_key,
+                    ));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 ProviderType::Anthropic => {

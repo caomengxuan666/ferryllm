@@ -190,6 +190,24 @@ Check a config without starting the server:
 ferryllm check-config --config examples/config/codexapis.toml
 ```
 
+To route OpenAI-compatible upstream calls through the Responses API instead of
+Chat Completions, build with the optional feature and use provider type
+`openai_responses`:
+
+```bash
+cargo build --release --features http,prompt-observability,openai-responses --bin ferryllm
+```
+
+```toml
+[[providers]]
+name = "codexapis"
+type = "openai_responses"
+base_url = "https://codexapis.com"
+api_key_env = "CODX_API_KEY"
+```
+
+See [examples/config/codexapis-responses.toml](examples/config/codexapis-responses.toml).
+
 ## Reasoning Effort
 
 Set the default model reasoning depth in TOML:

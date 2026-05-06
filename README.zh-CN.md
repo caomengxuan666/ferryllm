@@ -190,6 +190,23 @@ rewrite_model = "gpt-5.4"
 ferryllm check-config --config examples/config/codexapis.toml
 ```
 
+如果要让 OpenAI-compatible 上游走 Responses API，而不是 Chat Completions，
+需要开启可选 feature，并把 provider type 改成 `openai_responses`：
+
+```bash
+cargo build --release --features http,prompt-observability,openai-responses --bin ferryllm
+```
+
+```toml
+[[providers]]
+name = "codexapis"
+type = "openai_responses"
+base_url = "https://codexapis.com"
+api_key_env = "CODX_API_KEY"
+```
+
+示例见 [examples/config/codexapis-responses.toml](examples/config/codexapis-responses.toml)。
+
 ## 思考强度
 
 在 TOML 里设置默认模型思考强度：
