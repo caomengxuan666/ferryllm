@@ -294,7 +294,7 @@ cargo run --release --example load_test --features http -- \
 
 ## 路线图
 
-- 更多 provider adapter，包括 Gemini
+- [x] Gemini adapter
 - 支持加权和延迟感知 provider pool
 - 配置热加载
 - 更丰富的 Prometheus metrics 标签

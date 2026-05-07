@@ -50,6 +50,10 @@ Translates IR into OpenAI-compatible backend requests and parses OpenAI-compatib
 
 Translates IR into Anthropic backend requests and parses Anthropic responses.
 
+`adapters/gemini.rs`
+
+Translates IR into Gemini `generateContent` and `streamGenerateContent` requests and parses Gemini responses.
+
 `router.rs`
 
 Selects the provider and backend model based on the incoming model name.

@@ -1,0 +1,29 @@
+[server]
+listen = "127.0.0.1:3000"
+request_timeout_secs = 120
+body_limit_mb = 32
+
+[logging]
+level = "info"
+format = "text"
+
+[auth]
+enabled = false
+
+[metrics]
+enabled = true
+
+[[providers]]
+name = "gemini"
+type = "gemini"
+base_url = "https://generativelanguage.googleapis.com"
+api_key_env = "GEMINI_API_KEY"
+
+[[routes]]
+match = "gemini-"
+provider = "gemini"
+
+[[routes]]
+match = "*"
+provider = "gemini"
+rewrite_model = "gemini-2.5-flash"

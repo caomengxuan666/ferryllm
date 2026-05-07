@@ -154,9 +154,11 @@ the commented fallback if you need the older Chat Completions path.
 Provider fields:
 
 - `name`: Unique provider name used by routes.
-- `type`: Adapter type, for example `openai`, `openai_responses`, or `anthropic`.
+- `type`: Adapter type, for example `openai`, `openai_responses`, `anthropic`, or `gemini`.
 - `base_url`: Provider base URL without endpoint path rewriting in routes.
 - `api_key_env`: Environment variable containing the secret.
+
+`gemini` is available when ferryllm is built with `--features gemini`.
 
 Provider-specific options can be added later:
 

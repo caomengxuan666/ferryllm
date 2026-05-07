@@ -295,7 +295,7 @@ See [docs/load-testing.md](docs/load-testing.md).
 
 ## Roadmap
 
-- More provider adapters, including Gemini
+- [x] Gemini adapter
 - Weighted and latency-aware provider pools
 - Hot-reload configuration
 - Richer Prometheus metrics labels

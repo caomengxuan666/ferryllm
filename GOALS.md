@@ -57,7 +57,7 @@ src/
 - [x] Entry translation (client-side)
 - [x] Model router
 - [x] HTTP server with SSE streaming
-- [ ] Gemini adapter
+- [x] Gemini adapter
 - [x] Stateful tool-call JSON accumulation in streams
 - [ ] Connection pooling & keep-alive
 - [ ] Hot-reload configuration
