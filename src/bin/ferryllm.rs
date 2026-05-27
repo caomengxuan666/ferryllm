@@ -27,6 +27,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
             let listen: SocketAddr = config.server.listen.parse()?;
             let router = config.build_router()?;
+            let _watchers = ferryllm::config::start_key_watchers(&config, &router);
             let options = config.runtime_options()?;
             let state = Arc::new(AppState::new(router, options, Metrics::default()));
             let app = build_router(state);
@@ -73,7 +74,8 @@ fn parse_config_path(
 }
 
 fn init_logging(level: &str, format: &str) {
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
+    // Always try to construct a new EnvFilter with the specified level
+    let filter = EnvFilter::new(level);
     let builder = tracing_subscriber::fmt().with_env_filter(filter);
 
     let result = if format == "json" {
@@ -83,6 +85,9 @@ fn init_logging(level: &str, format: &str) {
     };
 
     let _ = result;
+
+    // Log after initialization so it actually prints
+    tracing::info!(level = %level, format = %format, "logging initialized");
 }
 
 fn print_help() {

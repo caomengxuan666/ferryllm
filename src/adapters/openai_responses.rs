@@ -9,7 +9,7 @@ use serde_json::Value;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace};
 
-use crate::adapter::{Adapter, AdapterError};
+use crate::adapter::{Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     push_summary_field, request_shape_debug_enabled, stable_hash_hex, summarize_flag,
@@ -138,16 +138,16 @@ struct ResponsesSseEvent {
 
 pub struct OpenaiResponsesAdapter {
     client: Client,
-    base_url: String,
-    api_key: String,
+    base_url: ApiKey,
+    api_key: ApiKey,
 }
 
 impl OpenaiResponsesAdapter {
     pub fn new(base_url: String, api_key: String) -> Self {
         Self {
             client: Client::new(),
-            base_url,
-            api_key,
+            base_url: ApiKey::new(base_url),
+            api_key: ApiKey::new(api_key),
         }
     }
 }
@@ -434,9 +434,17 @@ impl Adapter for OpenaiResponsesAdapter {
         !model.starts_with("claude-")
     }
 
+    fn update_api_key(&self, new_key: String) {
+        self.api_key.update(new_key);
+    }
+
+    fn update_base_url(&self, new_url: String) {
+        self.base_url.update(new_url);
+    }
+
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, AdapterError> {
         let native = ir_to_responses_request(request);
-        let url = format!("{}/v1/responses", self.base_url);
+        let url = format!("{}/v1/responses", self.base_url.read());
         info!(provider = "openai_responses", model = %request.model, stream = request.stream, "sending responses request");
         trace!(provider = "openai_responses", url = %url, body_model = %native.model, "responses request prepared");
         if request_shape_debug_enabled(request) {
@@ -450,7 +458,7 @@ impl Adapter for OpenaiResponsesAdapter {
         let resp = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key.read()))
             .json(&native)
             .send()
             .await
@@ -480,7 +488,7 @@ impl Adapter for OpenaiResponsesAdapter {
     {
         let mut native = ir_to_responses_request(request);
         native.stream = true;
-        let url = format!("{}/v1/responses", self.base_url);
+        let url = format!("{}/v1/responses", self.base_url.read());
         info!(provider = "openai_responses", model = %request.model, stream = true, "sending streaming responses request");
         if request_shape_debug_enabled(request) {
             debug!(
@@ -493,7 +501,7 @@ impl Adapter for OpenaiResponsesAdapter {
         let resp = self
             .client
             .post(&url)
-            .header("Authorization", format!("Bearer {}", self.api_key))
+            .header("Authorization", format!("Bearer {}", self.api_key.read()))
             .json(&native)
             .send()
             .await

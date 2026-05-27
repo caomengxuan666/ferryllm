@@ -64,6 +64,10 @@ impl Router {
         }
     }
 
+    pub fn get_adapter(&self, name: &str) -> Option<Arc<dyn Adapter>> {
+        self.adapters.get(name).cloned()
+    }
+
     pub fn add_route(&mut self, prefix: &str, provider: &str) {
         self.add_prefix_route(prefix, provider, None);
     }

@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace};
 
-use crate::adapter::{Adapter, AdapterError};
+use crate::adapter::{Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     request_shape_debug_enabled, stable_hash_hex, summarize_flag, summarize_optional_text,
@@ -75,7 +75,11 @@ struct GeminiGenerationConfig {
     temperature: Option<f32>,
     #[serde(rename = "maxOutputTokens", skip_serializing_if = "Option::is_none")]
     max_output_tokens: Option<u32>,
-    #[serde(rename = "stopSequences", default, skip_serializing_if = "Vec::is_empty")]
+    #[serde(
+        rename = "stopSequences",
+        default,
+        skip_serializing_if = "Vec::is_empty"
+    )]
     stop_sequences: Vec<String>,
     #[serde(rename = "thinkingConfig", skip_serializing_if = "Option::is_none")]
     thinking_config: Option<GeminiThinkingConfig>,
@@ -159,16 +163,16 @@ struct GeminiUsageMetadata {
 
 pub struct GeminiAdapter {
     client: Client,
-    base_url: String,
-    api_key: String,
+    base_url: ApiKey,
+    api_key: ApiKey,
 }
 
 impl GeminiAdapter {
     pub fn new(base_url: String, api_key: String) -> Self {
         Self {
             client: Client::new(),
-            base_url,
-            api_key,
+            base_url: ApiKey::new(base_url),
+            api_key: ApiKey::new(api_key),
         }
     }
 }
@@ -238,10 +242,7 @@ fn ir_to_gemini_request(req: &ChatRequest) -> GeminiRequest {
             temperature: req.temperature,
             max_output_tokens: req.max_tokens,
             stop_sequences: req.stop_sequences.clone(),
-            thinking_config: req
-                .reasoning
-                .as_ref()
-                .and_then(gemini_thinking_from_ir),
+            thinking_config: req.reasoning.as_ref().and_then(gemini_thinking_from_ir),
         })
     } else {
         None
@@ -304,7 +305,9 @@ fn ir_message_to_gemini_content(
                     function_response: None,
                 });
             }
-            ContentBlock::Image { source, media_type, .. } => match source {
+            ContentBlock::Image {
+                source, media_type, ..
+            } => match source {
                 ImageSource::Base64 { data } => parts.push(GeminiPart {
                     text: None,
                     inline_data: Some(GeminiInlineData {
@@ -391,7 +394,10 @@ fn gemini_response_to_ir(resp: GeminiResponse) -> ChatResponse {
             .content
             .map(|content| gemini_content_to_blocks(content.parts))
             .unwrap_or_default();
-        let finish_reason = candidate.finish_reason.as_deref().and_then(gemini_finish_reason);
+        let finish_reason = candidate
+            .finish_reason
+            .as_deref()
+            .and_then(gemini_finish_reason);
         (blocks, finish_reason)
     } else {
         (Vec::new(), None)
@@ -496,10 +502,7 @@ fn summarize_gemini_request(req: &GeminiRequest) -> String {
             .first()
             .and_then(|part| part.text.as_deref())
             .unwrap_or("");
-        summary.push_str(&format!(
-            "system={} ",
-            summarize_text(text)
-        ));
+        summary.push_str(&format!("system={} ", summarize_text(text)));
     }
     summary.push_str(&format!(
         "contents={} tools={} payload_hash={}",
@@ -524,12 +527,15 @@ fn parse_gemini_sse_frame(frame: &str) -> Result<Option<GeminiResponse>, Adapter
     }
 
     if data_lines.is_empty() {
-        return Err(AdapterError::StreamError("missing data in Gemini SSE frame".into()));
+        return Err(AdapterError::StreamError(
+            "missing data in Gemini SSE frame".into(),
+        ));
     }
 
     let payload = data_lines.join("\n");
-    let response = serde_json::from_str(&payload)
-        .map_err(|e| AdapterError::TranslationError(format!("failed to parse Gemini SSE frame: {e}")))?;
+    let response = serde_json::from_str(&payload).map_err(|e| {
+        AdapterError::TranslationError(format!("failed to parse Gemini SSE frame: {e}"))
+    })?;
     Ok(Some(response))
 }
 
@@ -550,9 +556,17 @@ impl Adapter for GeminiAdapter {
         model.starts_with("gemini-") || model.starts_with("models/gemini-")
     }
 
+    fn update_api_key(&self, new_key: String) {
+        self.api_key.update(new_key);
+    }
+
+    fn update_base_url(&self, new_url: String) {
+        self.base_url.update(new_url);
+    }
+
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, AdapterError> {
         let native = ir_to_gemini_request(request);
-        let url = gemini_request_url(&self.base_url, &request.model, false);
+        let url = gemini_request_url(&self.base_url.read(), &request.model, false);
         info!(provider = "gemini", model = %request.model, stream = request.stream, "sending chat request");
         trace!(provider = "gemini", url = %url, "gemini request prepared");
         if request_shape_debug_enabled(request) {
@@ -567,7 +581,7 @@ impl Adapter for GeminiAdapter {
         let resp = self
             .client
             .post(&url)
-            .header("x-goog-api-key", &self.api_key)
+            .header("x-goog-api-key", &self.api_key.read())
             .json(&native)
             .send()
             .await
@@ -596,7 +610,7 @@ impl Adapter for GeminiAdapter {
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError>
     {
         let native = ir_to_gemini_request(request);
-        let url = gemini_request_url(&self.base_url, &request.model, true);
+        let url = gemini_request_url(&self.base_url.read(), &request.model, true);
         info!(provider = "gemini", model = %request.model, stream = true, "sending streaming request");
         if request_shape_debug_enabled(request) {
             debug!(
@@ -610,7 +624,7 @@ impl Adapter for GeminiAdapter {
         let resp = self
             .client
             .post(&url)
-            .header("x-goog-api-key", &self.api_key)
+            .header("x-goog-api-key", &self.api_key.read())
             .json(&native)
             .send()
             .await
@@ -808,7 +822,10 @@ mod tests {
         assert_eq!(native.contents.len(), 1);
         assert_eq!(native.tools.len(), 1);
         assert_eq!(
-            native.tool_config.as_ref().map(|config| config.function_calling_config.mode.as_str()),
+            native
+                .tool_config
+                .as_ref()
+                .map(|config| config.function_calling_config.mode.as_str()),
             Some("ANY")
         );
     }
@@ -837,7 +854,10 @@ mod tests {
         };
 
         let ir = gemini_response_to_ir(resp);
-        assert!(matches!(ir.choices[0].finish_reason, Some(FinishReason::Stop)));
+        assert!(matches!(
+            ir.choices[0].finish_reason,
+            Some(FinishReason::Stop)
+        ));
         assert_eq!(ir.usage.prompt_tokens, 10);
         assert_eq!(ir.usage.cached_tokens, Some(3));
         match ir.choices[0].message.as_ref().unwrap().content[0] {

@@ -6,7 +6,7 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapter::{Adapter, AdapterError};
+use crate::adapter::{Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     push_summary_field, request_shape_debug_enabled, stable_hash_hex, summarize_flag,
@@ -257,8 +257,8 @@ struct AnthropicErrorBody {
 
 pub struct AnthropicAdapter {
     client: Client,
-    base_url: String,
-    api_key: String,
+    base_url: ApiKey,
+    api_key: ApiKey,
     anthropic_version: String,
 }
 
@@ -266,8 +266,8 @@ impl AnthropicAdapter {
     pub fn new(base_url: String, api_key: String) -> Self {
         Self {
             client: Client::new(),
-            base_url,
-            api_key,
+            base_url: ApiKey::new(base_url),
+            api_key: ApiKey::new(api_key),
             anthropic_version: "2023-06-01".into(),
         }
     }
@@ -671,9 +671,17 @@ impl Adapter for AnthropicAdapter {
         model.starts_with("claude-")
     }
 
+    fn update_api_key(&self, new_key: String) {
+        self.api_key.update(new_key);
+    }
+
+    fn update_base_url(&self, new_url: String) {
+        self.base_url.update(new_url);
+    }
+
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, AdapterError> {
         let native = ir_to_anthropic_request(request);
-        let url = format!("{}/v1/messages", self.base_url);
+        let url = format!("{}/v1/messages", self.base_url.read());
         info!(provider = "anthropic", model = %request.model, stream = request.stream, "sending chat request");
         trace!(provider = "anthropic", url = %url, body_model = %native.model, "anthropic request prepared");
         if request_shape_debug_enabled(request) {
@@ -687,7 +695,7 @@ impl Adapter for AnthropicAdapter {
         let resp = self
             .client
             .post(&url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &self.api_key.read())
             .header("anthropic-version", &self.anthropic_version)
             .json(&native)
             .send()
@@ -721,7 +729,7 @@ impl Adapter for AnthropicAdapter {
         let mut native = ir_to_anthropic_request(request);
         native.stream = true;
 
-        let url = format!("{}/v1/messages", self.base_url);
+        let url = format!("{}/v1/messages", self.base_url.read());
         info!(provider = "anthropic", model = %request.model, stream = true, "sending streaming request");
         if request_shape_debug_enabled(request) {
             debug!(
@@ -734,7 +742,7 @@ impl Adapter for AnthropicAdapter {
         let resp = self
             .client
             .post(&url)
-            .header("x-api-key", &self.api_key)
+            .header("x-api-key", &self.api_key.read())
             .header("anthropic-version", &self.anthropic_version)
             .json(&native)
             .send()

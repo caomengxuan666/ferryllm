@@ -1,9 +1,31 @@
 use std::pin::Pin;
+use std::sync::{Arc, RwLock};
 
 use async_trait::async_trait;
 use futures::Stream;
 
 use crate::ir::{ChatRequest, ChatResponse, StreamEvent};
+
+/// Thread-safe, hot-reloadable string field wrapper.
+#[derive(Clone)]
+pub struct WatchedField(Arc<RwLock<String>>);
+
+impl WatchedField {
+    pub fn new(value: String) -> Self {
+        Self(Arc::new(RwLock::new(value)))
+    }
+
+    pub fn read(&self) -> String {
+        self.0.read().unwrap().clone()
+    }
+
+    pub fn update(&self, new_value: String) {
+        *self.0.write().unwrap() = new_value;
+    }
+}
+
+/// Backward-compatible alias.
+pub type ApiKey = WatchedField;
 
 /// Errors that can occur during protocol translation or backend communication.
 #[derive(Debug, thiserror::Error)]
@@ -46,6 +68,12 @@ pub trait Adapter: Send + Sync {
         &self,
         request: &ChatRequest,
     ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamEvent, AdapterError>> + Send>>, AdapterError>;
+
+    /// Update the API key at runtime (for hot-reload from file watcher).
+    fn update_api_key(&self, _new_key: String) {}
+
+    /// Update the base URL at runtime (for hot-reload from file watcher).
+    fn update_base_url(&self, _new_url: String) {}
 }
 
 /// Convenience: every `Box<dyn Adapter>` is itself an [`Adapter`].

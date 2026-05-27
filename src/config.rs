@@ -164,7 +164,28 @@ pub struct ProviderConfig {
     #[serde(rename = "type")]
     pub provider_type: ProviderType,
     pub base_url: String,
-    pub api_key_env: String,
+    #[serde(default)]
+    pub api_key_env: Option<String>,
+    #[serde(default)]
+    pub api_key_url: Option<String>,
+    #[serde(default)]
+    pub api_key_file: Option<String>,
+    /// List of key file sources to watch. When any file changes, the key is
+    /// re-extracted using the `path` field (dotted JSON path, e.g. `OPENAI_API_KEY`
+    /// or `env.ANTHROPIC_AUTH_TOKEN`). Supports JSON and TOML files.
+    #[serde(default)]
+    pub key_watch: Vec<KeyWatchConfig>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyWatchConfig {
+    /// Absolute path to the file to watch.
+    pub file: String,
+    /// Dotted path to the API key value, e.g. `OPENAI_API_KEY` or `env.ANTHROPIC_AUTH_TOKEN`.
+    pub path: String,
+    /// Dotted path to the base URL value, e.g. `env.ANTHROPIC_BASE_URL`.
+    #[serde(default)]
+    pub url_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -230,17 +251,48 @@ impl Config {
                     provider.name
                 )));
             }
-            if provider.api_key_env.trim().is_empty() {
+            let key_sources = [
+                provider.api_key_env.is_some(),
+                provider.api_key_url.is_some(),
+                provider.api_key_file.is_some(),
+                !provider.key_watch.is_empty(),
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+            if key_sources > 1 {
                 return Err(ConfigError::Invalid(format!(
-                    "provider '{}' api_key_env cannot be empty",
+                    "provider '{}' must specify only one of: api_key_env, api_key_url, api_key_file, key_watch",
                     provider.name
                 )));
             }
-            if std::env::var(&provider.api_key_env).is_err() {
-                return Err(ConfigError::Invalid(format!(
-                    "environment variable '{}' is required for provider '{}'",
-                    provider.api_key_env, provider.name
-                )));
+            if let Some(env) = &provider.api_key_env {
+                if env.trim().is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider '{}' api_key_env cannot be empty",
+                        provider.name
+                    )));
+                }
+                if std::env::var(env).is_err() {
+                    return Err(ConfigError::Invalid(format!(
+                        "environment variable '{}' is required for provider '{}'",
+                        env, provider.name
+                    )));
+                }
+            }
+            if let Some(file) = &provider.api_key_file {
+                if file.trim().is_empty() {
+                    return Err(ConfigError::Invalid(format!(
+                        "provider '{}' api_key_file cannot be empty",
+                        provider.name
+                    )));
+                }
+                if !std::path::Path::new(file).exists() {
+                    return Err(ConfigError::Invalid(format!(
+                        "api_key_file '{}' for provider '{}' does not exist",
+                        file, provider.name
+                    )));
+                }
             }
         }
 
@@ -350,29 +402,62 @@ impl Config {
 
         let mut router = Router::new();
         for provider in &self.providers {
-            let api_key = std::env::var(&provider.api_key_env).map_err(|_| {
-                ConfigError::Invalid(format!(
-                    "environment variable '{}' is required for provider '{}'",
-                    provider.api_key_env, provider.name
-                ))
-            })?;
+            let api_key = if let Some(env) = &provider.api_key_env {
+                std::env::var(env).map_err(|_| {
+                    ConfigError::Invalid(format!(
+                        "environment variable '{}' is required for provider '{}'",
+                        env, provider.name
+                    ))
+                })?
+            } else if let Some(url) = &provider.api_key_url {
+                fetch_api_key(url, &provider.name)?
+            } else if let Some(file) = &provider.api_key_file {
+                read_key_file(file, &provider.name)?
+            } else if !provider.key_watch.is_empty() {
+                resolve_key_from_watch(&provider.key_watch, &provider.name)?
+            } else {
+                // Auto-detect API key from cc switch config files.
+                match cc_switch_resolve(&provider.provider_type) {
+                    Some(r) => r.key,
+                    None => {
+                        return Err(ConfigError::Invalid(format!(
+                            "provider '{}' has no key source and no cc switch config found",
+                            provider.name
+                        )));
+                    }
+                }
+            };
+
+            let key_prefix = &api_key[..api_key.len().min(8)];
+            let key_source = if provider.api_key_env.is_some() {
+                "env"
+            } else if provider.api_key_url.is_some() {
+                "url"
+            } else if provider.api_key_file.is_some() {
+                "file"
+            } else if !provider.key_watch.is_empty() {
+                "key_watch"
+            } else {
+                "cc_switch_auto"
+            };
+            tracing::trace!(provider = %provider.name, key_source, key_prefix = %key_prefix, "api key loaded");
 
             match provider.provider_type {
                 ProviderType::Openai => {
-                    let adapter = Arc::new(OpenaiAdapter::new(provider.base_url.clone(), api_key));
+                    let adapter =
+                        Arc::new(OpenaiAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 #[cfg(feature = "openai-responses")]
                 ProviderType::OpenaiResponses => {
-                    let adapter = Arc::new(OpenaiResponsesAdapter::new(
-                        provider.base_url.clone(),
-                        api_key,
-                    ));
+                    let adapter =
+                        Arc::new(OpenaiResponsesAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 #[cfg(feature = "gemini")]
                 ProviderType::Gemini => {
-                    let adapter = Arc::new(GeminiAdapter::new(provider.base_url.clone(), api_key));
+                    let adapter =
+                        Arc::new(GeminiAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 ProviderType::Anthropic => {
@@ -411,6 +496,358 @@ impl Config {
 
         Ok(router)
     }
+}
+
+fn read_key_file(path: &str, provider_name: &str) -> Result<String, ConfigError> {
+    let key = std::fs::read_to_string(path).map_err(|e| {
+        ConfigError::Invalid(format!(
+            "failed to read api_key_file '{}' for provider '{}': {}",
+            path, provider_name, e
+        ))
+    })?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(ConfigError::Invalid(format!(
+            "api_key_file '{}' for provider '{}' is empty",
+            path, provider_name
+        )));
+    }
+    Ok(key)
+}
+
+/// Try each `key_watch` entry in order; return the first key found.
+fn resolve_key_from_watch(
+    watches: &[KeyWatchConfig],
+    provider_name: &str,
+) -> Result<String, ConfigError> {
+    for watch in watches {
+        match extract_key_from_file(&watch.file, &watch.path) {
+            Ok(key) if !key.is_empty() => {
+                tracing::trace!(file = %watch.file, path = %watch.path, key_prefix = %&key[..key.len().min(8)], "resolved api key from watched file");
+                return Ok(key);
+            }
+            Ok(key) => {
+                tracing::debug!(file = %watch.file, path = %watch.path, "key_watch file exists but key is empty");
+            }
+            Err(e) => {
+                tracing::debug!(file = %watch.file, path = %watch.path, error = %e, "failed to extract key from key_watch file");
+            }
+        }
+    }
+    Err(ConfigError::Invalid(format!(
+        "provider '{}': no key found in any key_watch file",
+        provider_name
+    )))
+}
+
+/// Try each `key_watch` entry in order; return the first base URL found.
+/// Returns `None` if no `url_path` is configured or no value is found.
+fn resolve_url_from_watch(
+    watches: &[KeyWatchConfig],
+    _provider_name: &str,
+) -> Option<String> {
+    for watch in watches {
+        let url_path = watch.url_path.as_ref()?;
+        match extract_key_from_file(&watch.file, url_path) {
+            Ok(url) if !url.is_empty() => return Some(url),
+            _ => continue,
+        }
+    }
+    None
+}
+
+/// Read a JSON or TOML file and extract a value at the given dotted path.
+fn extract_key_from_file(file_path: &str, dotted_path: &str) -> Result<String, ConfigError> {
+    let content = std::fs::read_to_string(file_path).map_err(|e| {
+        ConfigError::Invalid(format!("failed to read '{}': {}", file_path, e))
+    })?;
+
+    let value: serde_json::Value = if file_path.ends_with(".json") {
+        serde_json::from_str(&content).map_err(|e| {
+            ConfigError::Invalid(format!("failed to parse JSON '{}': {}", file_path, e))
+        })?
+    } else if file_path.ends_with(".toml") {
+        let toml_val: toml::Value = toml::from_str(&content).map_err(|e| {
+            ConfigError::Invalid(format!("failed to parse TOML '{}': {}", file_path, e))
+        })?;
+        serde_json::to_value(toml_val).map_err(|e| {
+            ConfigError::Invalid(format!("failed to convert TOML '{}': {}", file_path, e))
+        })?
+    } else {
+        return Err(ConfigError::Invalid(format!(
+            "unsupported file type '{}': expected .json or .toml",
+            file_path
+        )));
+    };
+
+    extract_json_path(&value, dotted_path).ok_or_else(|| {
+        ConfigError::Invalid(format!(
+            "path '{}' not found in '{}'",
+            dotted_path, file_path
+        ))
+    })
+}
+
+/// Walk a `serde_json::Value` by a dotted path like `env.ANTHROPIC_AUTH_TOKEN`.
+fn extract_json_path(value: &serde_json::Value, dotted_path: &str) -> Option<String> {
+    let mut current = value;
+    for segment in dotted_path.split('.') {
+        current = current.get(segment)?;
+    }
+    current.as_str().map(String::from)
+}
+
+/// Auto-detected cc switch configuration for a provider type.
+struct CcSwitchResolved {
+    key: String,
+    /// Files to watch for hot-reload: (file, key_path)
+    watch_files: Vec<(String, String)>,
+}
+
+/// Resolve API key from well-known cc switch config files.
+/// base_url is NOT read from cc switch — it stays in our config (the client
+/// should point to ferryllm, not to the backend directly).
+fn cc_switch_resolve(provider_type: &ProviderType) -> Option<CcSwitchResolved> {
+    let home = dirs_home()?;
+
+    match provider_type {
+        ProviderType::Anthropic => {
+            let file = format!("{}/.claude/settings.json", home);
+            let key = extract_key_from_file(&file, "env.ANTHROPIC_AUTH_TOKEN").ok()?;
+            Some(CcSwitchResolved {
+                key,
+                watch_files: vec![(file, "env.ANTHROPIC_AUTH_TOKEN".into())],
+            })
+        }
+        ProviderType::Openai => {
+            let file = format!("{}/.codex/auth.json", home);
+            let key = extract_key_from_file(&file, "OPENAI_API_KEY").ok()?;
+            Some(CcSwitchResolved {
+                key,
+                watch_files: vec![(file, "OPENAI_API_KEY".into())],
+            })
+        }
+        #[cfg(feature = "openai-responses")]
+        ProviderType::OpenaiResponses => {
+            let file = format!("{}/.codex/auth.json", home);
+            let key = extract_key_from_file(&file, "OPENAI_API_KEY").ok()?;
+            Some(CcSwitchResolved {
+                key,
+                watch_files: vec![(file, "OPENAI_API_KEY".into())],
+            })
+        }
+        #[cfg(feature = "gemini")]
+        ProviderType::Gemini => None,
+    }
+}
+
+fn dirs_home() -> Option<String> {
+    #[cfg(windows)]
+    {
+        std::env::var("USERPROFILE").ok()
+    }
+    #[cfg(not(windows))]
+    {
+        std::env::var("HOME").ok()
+    }
+}
+
+fn fetch_api_key(url: &str, provider_name: &str) -> Result<String, ConfigError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .map_err(|e| {
+            ConfigError::Invalid(format!(
+                "failed to create HTTP client for provider '{}': {}",
+                provider_name, e
+            ))
+        })?;
+    let resp = client.get(url).send().map_err(|e| {
+        ConfigError::Invalid(format!(
+            "failed to fetch api_key_url for provider '{}': {}",
+            provider_name, e
+        ))
+    })?;
+    if !resp.status().is_success() {
+        return Err(ConfigError::Invalid(format!(
+            "api_key_url for provider '{}' returned status {}",
+            provider_name,
+            resp.status()
+        )));
+    }
+    let key = resp.text().map_err(|e| {
+        ConfigError::Invalid(format!(
+            "failed to read api_key_url response for provider '{}': {}",
+            provider_name, e
+        ))
+    })?;
+    let key = key.trim().to_string();
+    if key.is_empty() {
+        return Err(ConfigError::Invalid(format!(
+            "api_key_url for provider '{}' returned empty response",
+            provider_name
+        )));
+    }
+    Ok(key)
+}
+
+/// Opaque handle that keeps a file-system watcher alive.
+/// Dropping this stops watching.
+pub struct KeyFileWatcher {
+    _watcher: notify::RecommendedWatcher,
+}
+
+/// Start file-system watchers for every provider that uses `api_key_file` or `key_watch`.
+/// Returns a Vec of handles; dropping a handle stops that watcher.
+pub fn start_key_watchers(
+    config: &Config,
+    router: &Router,
+) -> Vec<KeyFileWatcher> {
+    use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+    use std::sync::mpsc;
+
+    let mut watchers = Vec::new();
+
+    for provider in &config.providers {
+        let adapter = match router.get_adapter(&provider.name) {
+            Some(a) => a,
+            None => continue,
+        };
+        let provider_name = provider.name.clone();
+
+        // Collect all (file, reload_fn) pairs for this provider.
+        let mut watch_entries: Vec<(String, Box<dyn Fn() + Send + 'static>)> = Vec::new();
+
+        // Case 1: api_key_file — simple file read
+        if let Some(file_path) = &provider.api_key_file {
+            let path = file_path.clone();
+            let name = provider_name.clone();
+            let a = Arc::clone(&adapter);
+            watch_entries.push((
+                path.clone(),
+                Box::new(move || {
+                    tracing::trace!(file = %path, "file changed, checking for api key");
+                    match read_key_file(&path, &name) {
+                        Ok(key) => {
+                            a.update_api_key(key);
+                            tracing::info!(provider = %name, "api key reloaded from file");
+                        }
+                        Err(e) => tracing::warn!(provider = %name, error = %e, "failed to reload api key"),
+                    }
+                }),
+            ));
+        }
+
+        // Case 2: key_watch — extract from JSON/TOML at dotted path
+        if !provider.key_watch.is_empty() {
+            let watches = provider.key_watch.clone();
+            let name = provider_name.clone();
+            let a = Arc::clone(&adapter);
+            for w in &watches {
+                let file = w.file.clone();
+                let watches_inner = watches.clone();
+                let name_inner = name.clone();
+                let a_inner = Arc::clone(&a);
+                let file_inner = file.clone();
+                watch_entries.push((
+                    file,
+                    Box::new(move || {
+                        tracing::trace!(file = %file_inner, "file changed, checking for api key");
+                        // Reload API key
+                        match resolve_key_from_watch(&watches_inner, &name_inner) {
+                            Ok(key) => {
+                                a_inner.update_api_key(key);
+                                tracing::info!(provider = %name_inner, "api key reloaded from watched file");
+                            }
+                            Err(e) => {
+                                tracing::debug!(provider = %name_inner, error = %e, "failed to reload api key from watched file");
+                            }
+                        }
+                        // Reload base URL (if url_path is configured)
+                        if let Some(url) = resolve_url_from_watch(&watches_inner, &name_inner) {
+                            a_inner.update_base_url(url);
+                            tracing::info!(provider = %name_inner, "base url reloaded from watched file");
+                        }
+                    }),
+                ));
+            }
+        }
+
+        // Case 3: auto-detect cc switch files (no explicit key source)
+        let has_explicit_source = provider.api_key_env.is_some()
+            || provider.api_key_url.is_some()
+            || provider.api_key_file.is_some()
+            || !provider.key_watch.is_empty();
+        if !has_explicit_source {
+            if let Some(cc) = cc_switch_resolve(&provider.provider_type) {
+                let name = provider_name.clone();
+                let a = Arc::clone(&adapter);
+                for (file, key_path) in cc.watch_files {
+                    let kp = key_path.clone();
+                    let file_for_fn = file.clone();
+                    let name_inner = name.clone();
+                    let a_inner = Arc::clone(&a);
+                    watch_entries.push((
+                        file,
+                        Box::new(move || {
+                            tracing::trace!(file = %file_for_fn, "cc switch file changed, checking for api key");
+                            match extract_key_from_file(&file_for_fn, &kp) {
+                                Ok(key) if !key.is_empty() => {
+                                    a_inner.update_api_key(key);
+                                    tracing::info!(provider = %name_inner, "api key reloaded from cc switch");
+                                }
+                                Ok(_) => {
+                                    tracing::debug!(provider = %name_inner, file = %file_for_fn, "cc switch file changed but no valid key found");
+                                }
+                                Err(e) => {
+                                    tracing::debug!(provider = %name_inner, file = %file_for_fn, error = %e, "cc switch file changed but failed to extract key");
+                                }
+                            }
+                        }),
+                    ));
+                }
+            }
+        }
+
+        // Deduplicate by file path (same file may appear in both api_key_file and key_watch).
+        let mut seen_files = std::collections::HashSet::new();
+        for (file_path, reload_fn) in watch_entries {
+            if !seen_files.insert(file_path.clone()) {
+                continue;
+            }
+
+            let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
+            let mut watcher = match RecommendedWatcher::new(
+                move |res: notify::Result<Event>| { let _ = tx.send(res); },
+                NotifyConfig::default(),
+            ) {
+                Ok(w) => w,
+                Err(e) => {
+                    tracing::error!(provider = %provider_name, error = %e, "failed to create file watcher");
+                    break;
+                }
+            };
+
+            if let Err(e) = watcher.watch(Path::new(&file_path), RecursiveMode::NonRecursive) {
+                tracing::error!(provider = %provider_name, file = %file_path, error = %e, "failed to watch file");
+                continue;
+            }
+
+            std::thread::spawn(move || {
+                while let Ok(Ok(event)) = rx.recv() {
+                    if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
+                        std::thread::sleep(std::time::Duration::from_millis(200));
+                        reload_fn();
+                    }
+                }
+            });
+
+            tracing::info!(provider = %provider_name, file = %file_path, "key file watcher started");
+            watchers.push(KeyFileWatcher { _watcher: watcher });
+        }
+    }
+
+    watchers
 }
 
 #[derive(Debug, thiserror::Error)]
