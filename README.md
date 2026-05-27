@@ -232,10 +232,11 @@ Run with debug logging and look for `reasoning=effort=...` in the outbound reque
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat completions |
 | `POST /v1/messages` | Anthropic-compatible messages |
+| `GET /v1/models` | OpenAI-compatible model listing |
 | `GET /health` | Simple health check |
 | `GET /healthz` | Kubernetes-style liveness check |
 | `GET /readyz` | Readiness check |
-| `GET /metrics` | Prometheus-style metrics |
+| `GET /metrics` | Prometheus-style metrics with per-provider/model labels |
 
 ## Prompt Cache
 

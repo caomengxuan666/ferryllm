@@ -217,6 +217,28 @@ impl ModelRoute {
     }
 }
 
+impl Router {
+    /// Return all registered provider names.
+    pub fn provider_names(&self) -> Vec<String> {
+        self.adapters.keys().cloned().collect()
+    }
+
+    /// Return all route patterns with their providers and rewrite targets.
+    pub fn route_summaries(&self) -> Vec<(&str, &str, Option<&str>, &MatchType)> {
+        self.model_routes
+            .iter()
+            .map(|r| {
+                (
+                    r.pattern.as_str(),
+                    r.provider.as_str(),
+                    r.rewrite_model.as_deref(),
+                    &r.match_type,
+                )
+            })
+            .collect()
+    }
+}
+
 impl Default for Router {
     fn default() -> Self {
         Self::new()

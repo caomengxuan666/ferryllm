@@ -153,6 +153,10 @@ pub enum AnthropicRespBlock {
         name: String,
         input: Value,
     },
+    #[serde(rename = "thinking")]
+    Thinking { thinking: String },
+    #[serde(rename = "redacted_thinking")]
+    RedactedThinking {},
 }
 
 #[derive(Debug, Serialize)]
@@ -417,6 +421,14 @@ pub fn ir_to_anthropic_response(ir: ChatResponse) -> AnthropicMessageResponse {
                         name: name.clone(),
                         input: canonical_json(input),
                     }),
+                    ContentBlock::Thinking { thinking, .. } => {
+                        Some(AnthropicRespBlock::Thinking {
+                            thinking: thinking.clone(),
+                        })
+                    }
+                    ContentBlock::RedactedThinking => {
+                        Some(AnthropicRespBlock::RedactedThinking {})
+                    }
                     _ => None,
                 })
                 .collect()
@@ -578,6 +590,13 @@ fn content_block_to_anthropic_sse(
             map.insert("name".into(), Value::String(name.clone()));
             map.insert("input".into(), canonical_json(input));
             ("tool_use", map)
+        }
+        ContentBlock::Thinking { thinking, .. } => {
+            map.insert("thinking".into(), Value::String(thinking.clone()));
+            ("thinking", map)
+        }
+        ContentBlock::RedactedThinking => {
+            ("redacted_thinking", map)
         }
         _ => {
             map.insert("text".into(), Value::String(String::new()));

@@ -6,6 +6,8 @@ use std::sync::Arc;
 use serde::Deserialize;
 
 use crate::adapter::AdapterError;
+#[cfg(feature = "gemini")]
+use crate::adapters::gemini::GeminiAdapter;
 #[cfg(feature = "openai-responses")]
 use crate::adapters::openai_responses::OpenaiResponsesAdapter;
 use crate::adapters::{anthropic::AnthropicAdapter, openai::OpenaiAdapter};
@@ -172,6 +174,8 @@ pub enum ProviderType {
     #[serde(rename = "openai_responses")]
     #[cfg(feature = "openai-responses")]
     OpenaiResponses,
+    #[cfg(feature = "gemini")]
+    Gemini,
     Anthropic,
 }
 
@@ -364,6 +368,11 @@ impl Config {
                         provider.base_url.clone(),
                         api_key,
                     ));
+                    router.register_adapter_as(&provider.name, adapter);
+                }
+                #[cfg(feature = "gemini")]
+                ProviderType::Gemini => {
+                    let adapter = Arc::new(GeminiAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 ProviderType::Anthropic => {

@@ -130,7 +130,6 @@ impl Default for PromptCacheOptions {
     }
 }
 
-#[derive(Default)]
 pub struct Metrics {
     requests_total: AtomicU64,
     requests_ok_total: AtomicU64,
@@ -143,6 +142,58 @@ pub struct Metrics {
     prompt_cached_tokens_total: AtomicU64,
     prompt_cache_creation_tokens_total: AtomicU64,
     prompt_cache_read_tokens_total: AtomicU64,
+    labeled: Mutex<HashMap<LabelKey, LabelMetrics>>,
+}
+
+#[derive(Hash, Eq, PartialEq, Clone)]
+struct LabelKey {
+    provider: String,
+    model: String,
+}
+
+#[derive(Default)]
+struct LabelMetrics {
+    requests: AtomicU64,
+    errors: AtomicU64,
+    latency_micros: AtomicU64,
+    tokens: AtomicU64,
+}
+
+impl LabelMetrics {
+    fn inc_request(&self) {
+        self.requests.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn inc_error(&self) {
+        self.errors.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn add_latency(&self, micros: u64) {
+        self.latency_micros.fetch_add(micros, Ordering::Relaxed);
+    }
+
+    fn add_tokens(&self, tokens: u64) {
+        self.tokens.fetch_add(tokens, Ordering::Relaxed);
+    }
+}
+
+impl Default for Metrics {
+    fn default() -> Self {
+        Self {
+            requests_total: AtomicU64::new(0),
+            requests_ok_total: AtomicU64::new(0),
+            requests_error_total: AtomicU64::new(0),
+            upstream_errors_total: AtomicU64::new(0),
+            request_latency_micros_total: AtomicU64::new(0),
+            estimated_prompt_tokens_total: AtomicU64::new(0),
+            upstream_prompt_tokens_total: AtomicU64::new(0),
+            cache_prompt_tokens_total: AtomicU64::new(0),
+            prompt_cached_tokens_total: AtomicU64::new(0),
+            prompt_cache_creation_tokens_total: AtomicU64::new(0),
+            prompt_cache_read_tokens_total: AtomicU64::new(0),
+            labeled: Mutex::new(HashMap::new()),
+        }
+    }
 }
 
 struct RateLimiter {
@@ -214,19 +265,25 @@ impl RateLimiter {
     }
 
     fn try_acquire_at(&self, epoch_minute: u64) -> bool {
-        let current_window = self.window_epoch_minute.load(Ordering::Relaxed);
-        if current_window != epoch_minute
-            && self
-                .window_epoch_minute
-                .compare_exchange(
-                    current_window,
-                    epoch_minute,
-                    Ordering::Relaxed,
-                    Ordering::Relaxed,
-                )
-                .is_ok()
-        {
-            self.used.store(0, Ordering::Relaxed);
+        loop {
+            let current_window = self.window_epoch_minute.load(Ordering::Relaxed);
+            if current_window != epoch_minute {
+                if self
+                    .window_epoch_minute
+                    .compare_exchange(
+                        current_window,
+                        epoch_minute,
+                        Ordering::Relaxed,
+                        Ordering::Relaxed,
+                    )
+                    .is_ok()
+                {
+                    self.used.store(0, Ordering::Relaxed);
+                }
+                // If CAS failed, another thread updated the window; reload.
+                continue;
+            }
+            break;
         }
 
         loop {
@@ -296,6 +353,47 @@ impl Metrics {
         }
     }
 
+    fn inc_labeled_request(&self, provider: &str, model: &str) {
+        let key = LabelKey {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        let mut map = self.labeled.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key).or_insert_with(LabelMetrics::default).inc_request();
+    }
+
+    fn inc_labeled_error(&self, provider: &str, model: &str) {
+        let key = LabelKey {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        let mut map = self.labeled.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key).or_insert_with(LabelMetrics::default).inc_error();
+    }
+
+    fn observe_labeled_latency(&self, provider: &str, model: &str, elapsed: Duration) {
+        let key = LabelKey {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        let micros = elapsed.as_micros().min(u128::from(u64::MAX)) as u64;
+        let mut map = self.labeled.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key)
+            .or_insert_with(LabelMetrics::default)
+            .add_latency(micros);
+    }
+
+    fn observe_labeled_tokens(&self, provider: &str, model: &str, tokens: u64) {
+        let key = LabelKey {
+            provider: provider.to_string(),
+            model: model.to_string(),
+        };
+        let mut map = self.labeled.lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(key)
+            .or_insert_with(LabelMetrics::default)
+            .add_tokens(tokens);
+    }
+
     fn render(&self) -> String {
         let requests_total = self.requests_total.load(Ordering::Relaxed);
         let latency_total = self.request_latency_micros_total.load(Ordering::Relaxed);
@@ -307,7 +405,7 @@ impl Metrics {
             .checked_mul(10_000)
             .and_then(|v| v.checked_div(cache_prompt_tokens))
             .unwrap_or(0);
-        format!(
+        let mut out = format!(
             "# TYPE ferryllm_requests_total counter\nferryllm_requests_total {}\n# TYPE ferryllm_requests_ok_total counter\nferryllm_requests_ok_total {}\n# TYPE ferryllm_requests_error_total counter\nferryllm_requests_error_total {}\n# TYPE ferryllm_upstream_errors_total counter\nferryllm_upstream_errors_total {}\n# TYPE ferryllm_request_latency_micros_total counter\nferryllm_request_latency_micros_total {}\n# TYPE ferryllm_request_latency_micros_average gauge\nferryllm_request_latency_micros_average {}\n# TYPE ferryllm_estimated_prompt_tokens_total counter\nferryllm_estimated_prompt_tokens_total {}\n# TYPE ferryllm_upstream_prompt_tokens_total counter\nferryllm_upstream_prompt_tokens_total {}\n# TYPE ferryllm_cache_prompt_tokens_total counter\nferryllm_cache_prompt_tokens_total {}\n# TYPE ferryllm_prompt_cached_tokens_total counter\nferryllm_prompt_cached_tokens_total {}\n# TYPE ferryllm_prompt_cache_creation_tokens_total counter\nferryllm_prompt_cache_creation_tokens_total {}\n# TYPE ferryllm_prompt_cache_read_tokens_total counter\nferryllm_prompt_cache_read_tokens_total {}\n# TYPE ferryllm_prompt_cache_hit_ratio gauge\nferryllm_prompt_cache_hit_ratio {:.4}\n",
             requests_total,
             self.requests_ok_total.load(Ordering::Relaxed),
@@ -323,7 +421,30 @@ impl Metrics {
                 .load(Ordering::Relaxed),
             self.prompt_cache_read_tokens_total.load(Ordering::Relaxed),
             cache_hit_ratio as f64 / 10_000.0,
-        )
+        );
+
+        // Labeled per-provider/model metrics
+        let map = self.labeled.lock().unwrap_or_else(|e| e.into_inner());
+        if !map.is_empty() {
+            out.push_str("# TYPE ferryllm_labeled_requests counter\n");
+            out.push_str("# TYPE ferryllm_labeled_errors counter\n");
+            out.push_str("# TYPE ferryllm_labeled_latency_micros counter\n");
+            out.push_str("# TYPE ferryllm_labeled_tokens counter\n");
+            for (key, lm) in map.iter() {
+                let labels = format!("provider=\"{}\",model=\"{}\"", key.provider, key.model);
+                let reqs = lm.requests.load(Ordering::Relaxed);
+                let errs = lm.errors.load(Ordering::Relaxed);
+                let lat = lm.latency_micros.load(Ordering::Relaxed);
+                let toks = lm.tokens.load(Ordering::Relaxed);
+                use std::fmt::Write;
+                let _ = writeln!(out, "ferryllm_labeled_requests{{{labels}}} {reqs}");
+                let _ = writeln!(out, "ferryllm_labeled_errors{{{labels}}} {errs}");
+                let _ = writeln!(out, "ferryllm_labeled_latency_micros{{{labels}}} {lat}");
+                let _ = writeln!(out, "ferryllm_labeled_tokens{{{labels}}} {toks}");
+            }
+        }
+
+        out
     }
 }
 
@@ -331,6 +452,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/v1/chat/completions", post(openai_chat_handler))
         .route("/v1/messages", post(anthropic_messages_handler))
+        .route("/v1/models", axum::routing::get(models_handler))
         .route("/health", axum::routing::get(health_handler))
         .route("/healthz", axum::routing::get(health_handler))
         .route("/readyz", axum::routing::get(ready_handler))
@@ -586,6 +708,7 @@ async fn openai_chat_handler(
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
     info!(request_id = %request_id, entry = "openai", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = fallback_count, "resolved route");
+    state.metrics.inc_labeled_request(&route.provider, &display_model);
 
     let response = if stream {
         handle_openai_stream(
@@ -608,6 +731,7 @@ async fn openai_chat_handler(
         .await
     };
     state.metrics.observe_latency(started_at.elapsed());
+    state.metrics.observe_labeled_latency(&route.provider, &display_model, started_at.elapsed());
     match response {
         Ok(response) => {
             log_access(RequestLog {
@@ -624,6 +748,7 @@ async fn openai_chat_handler(
             Ok(response)
         }
         Err(err) => {
+            state.metrics.inc_labeled_error(&route.provider, &display_model);
             log_access(RequestLog {
                 entry: "openai",
                 request_id: &request_id,
@@ -751,6 +876,7 @@ async fn anthropic_messages_handler(
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
     info!(request_id = %request_id, entry = "anthropic", display_model = %display_model, backend_model = %ir_req.model, provider = %route.provider, fallbacks = fallback_count, "resolved route");
+    state.metrics.inc_labeled_request(&route.provider, &display_model);
 
     let response = if stream {
         handle_anthropic_stream(
@@ -773,6 +899,7 @@ async fn anthropic_messages_handler(
         .await
     };
     state.metrics.observe_latency(started_at.elapsed());
+    state.metrics.observe_labeled_latency(&route.provider, &display_model, started_at.elapsed());
     match response {
         Ok(response) => {
             log_access(RequestLog {
@@ -789,6 +916,7 @@ async fn anthropic_messages_handler(
             Ok(response)
         }
         Err(err) => {
+            state.metrics.inc_labeled_error(&route.provider, &display_model);
             log_access(RequestLog {
                 entry: "anthropic",
                 request_id: &request_id,
@@ -1236,6 +1364,67 @@ fn retry_delay(state: &Arc<AppState>, attempt: u32) -> Duration {
     Duration::from_millis(state.options.retry_backoff_ms.saturating_mul(multiplier))
 }
 
+// ── Models ──────────────────────────────────────────────────────────────────
+
+async fn models_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<axum::response::Response, AppError> {
+    let now = std::time::SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    let mut models: Vec<serde_json::Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    for (pattern, provider, rewrite, match_type) in state.router.route_summaries() {
+        let id = if pattern.is_empty() {
+            "*".to_string()
+        } else {
+            pattern.to_string()
+        };
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let owned_by = provider.to_string();
+        models.push(serde_json::json!({
+            "id": id,
+            "object": "model",
+            "created": now,
+            "owned_by": owned_by,
+            "_ferryllm": {
+                "match_type": format!("{:?}", match_type).to_lowercase(),
+                "rewrite_model": rewrite,
+            }
+        }));
+    }
+
+    for name in state.router.provider_names() {
+        let id = format!("provider:{name}");
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        models.push(serde_json::json!({
+            "id": id,
+            "object": "model",
+            "created": now,
+            "owned_by": name,
+        }));
+    }
+
+    let body = serde_json::json!({
+        "object": "list",
+        "data": models,
+    });
+    let json = serde_json::to_string(&body).unwrap_or_default();
+    Ok((
+        StatusCode::OK,
+        [(axum::http::header::CONTENT_TYPE, "application/json")],
+        json,
+    )
+        .into_response())
+}
+
 // ── Health ──────────────────────────────────────────────────────────────────
 
 async fn health_handler() -> &'static str {
@@ -1409,11 +1598,25 @@ async fn with_timeout<T>(
 }
 
 fn uuid_v4() -> String {
-    let ts = SystemTime::now()
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    use std::sync::atomic::AtomicU64;
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let seq = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_nanos();
-    format!("{:032x}", ts)
+    let mut hasher = DefaultHasher::new();
+    nanos.hash(&mut hasher);
+    seq.hash(&mut hasher);
+    std::thread::current().id().hash(&mut hasher);
+    let h1 = hasher.finish();
+    let mut hasher2 = DefaultHasher::new();
+    h1.hash(&mut hasher2);
+    std::process::id().hash(&mut hasher2);
+    let h2 = hasher2.finish();
+    format!("{:016x}{:016x}", h1, h2)
 }
 
 fn current_epoch_minute() -> u64 {
