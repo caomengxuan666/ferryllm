@@ -2,6 +2,26 @@
 
 All notable changes to ferryllm are documented here.
 
+## 0.1.5 - 2026-05-30
+
+### Added
+
+- Codex Responses API bridge with tool call caching.
+- Gemini provider support, model listing improvements, and metrics labels.
+- `key_watch` documentation for hot-reloading API keys.
+
+### Changed
+
+- Stream reasoning blocks in Responses API SSE output.
+- Improve logging config priority and file watcher debug logging.
+
+### Fixed
+
+- Preserve `thinking_delta` events in the intermediate representation to avoid
+  stream disconnections.
+- Merge Responses API function call output into assistant messages.
+- Address clippy warnings for CI.
+
 ## 0.1.4 - 2026-05-06
 
 ### Added
