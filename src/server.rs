@@ -879,7 +879,8 @@ async fn responses_handler(
     let resp_req: openai_responses::ResponsesRequest =
         serde_json::from_value(body).map_err(|e| AppError::bad_request(e.to_string()))?;
     let stream = resp_req.stream;
-    let mut ir_req = openai_responses::responses_to_ir_with_cache(&resp_req, Some(&state.tool_call_cache));
+    let mut ir_req =
+        openai_responses::responses_to_ir_with_cache(&resp_req, Some(&state.tool_call_cache));
     strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
@@ -1053,9 +1054,14 @@ async fn handle_responses_stream(
                                         item["item"]["name"].as_str(),
                                         item["item"]["arguments"].as_str(),
                                     ) {
-                                        if let Ok(input) = serde_json::from_str::<serde_json::Value>(args) {
+                                        if let Ok(input) =
+                                            serde_json::from_str::<serde_json::Value>(args)
+                                        {
                                             if let Ok(mut cache) = tool_cache.lock() {
-                                                cache.insert(id.to_string(), (name.to_string(), input));
+                                                cache.insert(
+                                                    id.to_string(),
+                                                    (name.to_string(), input),
+                                                );
                                             }
                                         }
                                     }
@@ -1260,7 +1266,13 @@ async fn handle_anthropic_stream(
 
     let prepend = futures::stream::once({
         let model = display_model.clone();
-        async move { Control::Injected(ir::StreamEvent::MessageStart { message_id, model, input_tokens: None }) }
+        async move {
+            Control::Injected(ir::StreamEvent::MessageStart {
+                message_id,
+                model,
+                input_tokens: None,
+            })
+        }
     });
 
     let adapter_stream = backend_stream.map(Control::Adapter);

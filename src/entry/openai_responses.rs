@@ -322,9 +322,10 @@ fn responses_input_item_to_ir_with_cache(
             // Look up the tool name from cache, or use call_id as fallback
             let (tool_name, tool_input) = if let Some(cache) = tool_call_cache {
                 if let Ok(cache) = cache.lock() {
-                    cache.get(call_id).cloned().unwrap_or_else(|| {
-                        (call_id.clone(), serde_json::json!({}))
-                    })
+                    cache
+                        .get(call_id)
+                        .cloned()
+                        .unwrap_or_else(|| (call_id.clone(), serde_json::json!({})))
                 } else {
                     (call_id.clone(), serde_json::json!({}))
                 }
@@ -366,7 +367,12 @@ fn merge_tool_use_messages(messages: Vec<Message>) -> Vec<Message> {
     let mut pending_tool_results: Vec<ContentBlock> = Vec::new();
 
     for (i, msg) in messages.iter().enumerate() {
-        eprintln!("  MERGE[{}]: role={:?} blocks={}", i, msg.role, msg.content.len());
+        eprintln!(
+            "  MERGE[{}]: role={:?} blocks={}",
+            i,
+            msg.role,
+            msg.content.len()
+        );
     }
 
     for msg in messages {
@@ -437,7 +443,12 @@ fn merge_tool_use_messages(messages: Vec<Message>) -> Vec<Message> {
     }
 
     for (i, msg) in result.iter().enumerate() {
-        eprintln!("  MERGE_OUT[{}]: role={:?} blocks={}", i, msg.role, msg.content.len());
+        eprintln!(
+            "  MERGE_OUT[{}]: role={:?} blocks={}",
+            i,
+            msg.role,
+            msg.content.len()
+        );
     }
 
     result
@@ -650,12 +661,15 @@ pub fn ir_to_responses_sse(
             // Buffer the tool_use - don't emit until ContentBlockStop
             // The actual arguments come via InputJSONDelta events
             // Start with the initial input (may be empty for streaming)
-            let initial_args = if input.is_object() && !input.as_object().map_or(true, |m| m.is_empty()) {
-                canonical_json_string(&input)
-            } else {
-                String::new()
-            };
-            state.pending_tool_calls.insert(index, (id, name, initial_args));
+            let initial_args =
+                if input.is_object() && !input.as_object().map_or(true, |m| m.is_empty()) {
+                    canonical_json_string(&input)
+                } else {
+                    String::new()
+                };
+            state
+                .pending_tool_calls
+                .insert(index, (id, name, initial_args));
             vec![]
         }
 
@@ -806,7 +820,10 @@ pub fn ir_to_responses_sse(
                 ));
                 // If this was the last pending item and message_stop was already received,
                 // send response.completed now
-                if state.pending_tool_calls.is_empty() && state.opened_items.is_empty() && state.completed_sent.load(Ordering::Relaxed) {
+                if state.pending_tool_calls.is_empty()
+                    && state.opened_items.is_empty()
+                    && state.completed_sent.load(Ordering::Relaxed)
+                {
                     let usage = state.pending_usage.take().unwrap_or_default();
                     events.push(make_sse(
                         "response.completed",
@@ -1197,7 +1214,8 @@ mod tests {
             "output": "{\"temp\": 72}"
         });
 
-        let item: ResponsesInputItem = serde_json::from_value(raw).expect("parse function_call_output");
+        let item: ResponsesInputItem =
+            serde_json::from_value(raw).expect("parse function_call_output");
         match &item {
             ResponsesInputItem::FunctionCallOutput { call_id, output } => {
                 assert_eq!(call_id, "call_abc123");
@@ -1209,12 +1227,17 @@ mod tests {
         // Verify conversion to IR
         let ir_msgs = responses_input_item_to_ir(&item);
         assert_eq!(ir_msgs.len(), 2); // assistant(tool_use) + user(tool_result)
-        // First message: assistant with tool_use
+                                      // First message: assistant with tool_use
         assert_eq!(ir_msgs[0].role, Role::Assistant);
         // Second message: tool with tool_result
         assert_eq!(ir_msgs[1].role, Role::Tool);
         match &ir_msgs[1].content[0] {
-            ContentBlock::ToolResult { id, content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                id,
+                content,
+                is_error,
+                ..
+            } => {
                 assert_eq!(id, "call_abc123");
                 assert_eq!(content, "{\"temp\": 72}");
                 assert!(!is_error);
@@ -1260,7 +1283,12 @@ mod tests {
         // Third message: tool result from function_call_output
         assert_eq!(ir.messages[2].role, Role::Tool);
         match &ir.messages[2].content[0] {
-            ContentBlock::ToolResult { id, content, is_error, .. } => {
+            ContentBlock::ToolResult {
+                id,
+                content,
+                is_error,
+                ..
+            } => {
                 assert_eq!(id, "call_weather_001");
                 assert_eq!(content, "{\"temp\": 72, \"condition\": \"sunny\"}");
                 assert!(!is_error);

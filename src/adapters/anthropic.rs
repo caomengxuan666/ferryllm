@@ -323,7 +323,10 @@ fn sanitize_tool_parameters(params: &Value) -> Option<Value> {
                             })
                             .collect();
                         if valid.is_empty() {
-                            result.insert(k.clone(), Value::Array(vec![Value::String("object".into())]));
+                            result.insert(
+                                k.clone(),
+                                Value::Array(vec![Value::String("object".into())]),
+                            );
                         } else {
                             result.insert(k.clone(), Value::Array(valid));
                         }
@@ -365,8 +368,7 @@ fn ir_to_anthropic_request(req: &ChatRequest) -> AnthropicRequest {
         .map(ir_message_to_anthropic)
         .collect();
 
-    for (i, t) in req.tools.iter().enumerate() {
-    }
+    for (i, t) in req.tools.iter().enumerate() {}
 
     let mut seen_tool_names = std::collections::HashSet::new();
     let tools: Vec<AnthropicTool> = req
@@ -577,7 +579,7 @@ fn anthropic_block_to_ir(block: &AnthropicRespBlock) -> ContentBlock {
                 input: canonical_json(input),
                 cache_control: None,
             }
-        },
+        }
         AnthropicRespBlock::Thinking { thinking } => ContentBlock::Thinking {
             thinking: thinking.clone(),
             cache_control: None,
@@ -820,8 +822,7 @@ impl Adapter for AnthropicAdapter {
         let url = format!("{}/v1/messages", self.base_url.read());
         info!(provider = "anthropic", model = %request.model, stream = true, "sending streaming request");
         // Debug: dump the full request body
-        if let Ok(body) = serde_json::to_string(&native) {
-        }
+        if let Ok(body) = serde_json::to_string(&native) {}
         if request_shape_debug_enabled(request) {
             debug!(
                 provider = "anthropic",
@@ -862,9 +863,11 @@ impl Adapter for AnthropicAdapter {
             .scan(Vec::<u8>::new(), |buf, result| {
                 let bytes = match result {
                     Ok(b) => b,
-                    Err(e) => return futures::future::ready(Some(Err(
-                        AdapterError::StreamError(e.to_string()),
-                    ))),
+                    Err(e) => {
+                        return futures::future::ready(Some(Err(AdapterError::StreamError(
+                            e.to_string(),
+                        ))))
+                    }
                 };
                 buf.extend_from_slice(&bytes);
 
