@@ -100,6 +100,8 @@ pub enum ResponsesContentPart {
     InputText { text: String },
     #[serde(rename = "output_text")]
     OutputText { text: String },
+    #[serde(rename = "reasoning_text")]
+    Reasoning { text: String },
 }
 
 #[derive(Debug, Deserialize)]
@@ -296,6 +298,10 @@ fn responses_input_item_to_ir_with_cache(
                                 cache_control: None,
                             });
                         }
+                    }
+                    ResponsesContentPart::Reasoning { .. } => {
+                        // Reasoning content from previous response - skip for now
+                        // (Anthropic doesn't accept thinking blocks in the input)
                     }
                 }
             }
@@ -569,6 +575,8 @@ pub struct ResponsesStreamState {
     pub accumulated_text: HashMap<u32, String>,
     /// Pending tool_use blocks: index -> (id, name, accumulated_json)
     pub pending_tool_calls: HashMap<u32, (String, String, String)>,
+    /// Thinking blocks: index -> accumulated thinking text
+    pub thinking_blocks: HashMap<u32, String>,
     pub pending_usage: Option<Usage>,
     pub completed_sent: Arc<AtomicBool>,
 }
@@ -656,8 +664,31 @@ pub fn ir_to_responses_sse(
             content_block: ContentBlock::Thinking { .. },
         } => {
             state.opened_items.insert(index);
-            state.accumulated_text.insert(index, String::new());
-            vec![]
+            state.thinking_blocks.insert(index, String::new());
+            let reasoning_id = format!("rs_{}", uuid_simple());
+            // Emit output_item.added FIRST to create the active reasoning item
+            vec![
+                make_sse(
+                    "response.output_item.added",
+                    serde_json::json!({
+                        "type": "response.output_item.added",
+                        "output_index": 0,
+                        "item": {
+                            "type": "reasoning",
+                            "id": reasoning_id,
+                            "summary": [],
+                            "status": "in_progress"
+                        }
+                    }),
+                ),
+                make_sse(
+                    "response.reasoning_summary_part.added",
+                    serde_json::json!({
+                        "type": "response.reasoning_summary_part.added",
+                        "summary_index": 0
+                    }),
+                ),
+            ]
         }
 
         StreamEvent::ContentBlockStart { .. } => vec![],
@@ -724,6 +755,24 @@ pub fn ir_to_responses_sse(
             vec![]
         }
 
+        StreamEvent::ContentBlockDelta {
+            index,
+            delta: ContentDelta::ThinkingDelta { thinking },
+        } => {
+            // Accumulate thinking text and emit streaming delta
+            if let Some(ref mut text) = state.thinking_blocks.get_mut(&index) {
+                text.push_str(&thinking);
+            }
+            vec![make_sse(
+                "response.reasoning_summary_text.delta",
+                serde_json::json!({
+                    "type": "response.reasoning_summary_text.delta",
+                    "summary_index": 0,
+                    "delta": thinking
+                }),
+            )]
+        }
+
         StreamEvent::ContentBlockDelta { .. } => vec![],
 
         StreamEvent::ContentBlockStop { index } => {
@@ -782,14 +831,28 @@ pub fn ir_to_responses_sse(
                 return events;
             }
 
-            // If this index is in opened_items but has no accumulated text,
-            // it's a thinking block (or other non-text block) - just remove it from tracking
-            let is_thinking_block =
-                state.opened_items.contains(&index) && !state.accumulated_text.contains_key(&index);
-
-            if is_thinking_block {
+            // Check if this is a thinking block
+            if let Some(thinking_text) = state.thinking_blocks.remove(&index) {
                 state.opened_items.remove(&index);
-                state.accumulated_text.remove(&index);
+
+                // Emit reasoning output_item.done (item was already added at start)
+                if !thinking_text.is_empty() {
+                    let reasoning_id = format!("rs_{}", uuid_simple());
+                    let item = serde_json::json!({
+                        "type": "reasoning",
+                        "id": reasoning_id,
+                        "summary": [{"type": "summary_text", "text": thinking_text}],
+                        "status": "completed"
+                    });
+                    events.push(make_sse(
+                        "response.output_item.done",
+                        serde_json::json!({
+                            "type": "response.output_item.done",
+                            "output_index": 0,
+                            "item": item
+                        }),
+                    ));
+                }
 
                 // If this was the last opened item and message_stop was already received,
                 // send response.completed now
@@ -1039,6 +1102,7 @@ mod tests {
             opened_items: HashSet::new(),
             accumulated_text: HashMap::new(),
             pending_tool_calls: HashMap::new(),
+            thinking_blocks: HashMap::new(),
             pending_usage: None,
             completed_sent: Arc::new(AtomicBool::new(false)),
         };

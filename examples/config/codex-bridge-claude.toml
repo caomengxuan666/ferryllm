@@ -1,0 +1,54 @@
+# Codex → MiMo Bridge (via Anthropic Messages API)
+[server]
+listen = "0.0.0.0:3002"
+request_timeout_secs = 300
+body_limit_mb = 32
+
+[logging]
+level = "info"
+format = "text"
+
+[auth]
+enabled = false
+
+[metrics]
+enabled = true
+
+[prompt_cache]
+auto_inject_anthropic_cache_control = true
+cache_system = true
+cache_tools = true
+cache_last_user_message = true
+openai_prompt_cache_key = "ferryllm"
+debug_log_request_shape = true
+
+[[providers]]
+name = "claude"
+type = "anthropic"
+base_url = "https://token-plan-cn.xiaomimimo.com/anthropic"
+
+[[providers.key_watch]]
+file = "C:/Users/hzz/.claude/settings.json"
+path = "env.ANTHROPIC_AUTH_TOKEN"
+
+[[routes]]
+match = "gpt-5.5"
+match_type = "exact"
+provider = "claude"
+rewrite_model = "mimo-v2.5-pro"
+
+[[routes]]
+match = "gpt-4o"
+match_type = "exact"
+provider = "claude"
+rewrite_model = "mimo-v2.5-pro"
+
+[[routes]]
+match = "gpt-"
+provider = "claude"
+rewrite_model = "mimo-v2.5-pro"
+
+[[routes]]
+match = "*"
+provider = "claude"
+rewrite_model = "mimo-v2.5-pro"

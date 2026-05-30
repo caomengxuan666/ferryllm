@@ -1014,6 +1014,7 @@ async fn handle_responses_stream(
         opened_items: HashSet::new(),
         accumulated_text: HashMap::new(),
         pending_tool_calls: HashMap::new(),
+        thinking_blocks: HashMap::new(),
         pending_usage: None,
         completed_sent: Arc::new(AtomicBool::new(false)),
     };
