@@ -185,7 +185,8 @@ pub fn responses_to_ir_with_cache(
         messages.extend(responses_input_item_to_ir_with_cache(item, tool_call_cache));
     }
 
-    // Second pass: merge empty assistant + empty user + tool_result into assistant(tool_use) + user(tool_result)
+    // Second pass: merge placeholder messages and pair reconstructed tool calls
+    // with their tool results.
     let messages = merge_tool_use_messages(messages);
 
     let tools = req
@@ -358,44 +359,42 @@ fn responses_input_item_to_ir_with_cache(
     }
 }
 
-/// Merge tool_use messages: when we see assistant(tool_use) followed by user(tool_result),
-/// ensure they are properly paired. Also handles the case where Codex sends
-/// assistant(empty) + user(empty) + FunctionCallOutput by converting FunctionCallOutput
-/// to assistant(tool_use) and the subsequent tool_result to user(tool_result).
+/// Merge tool_use messages reconstructed from `function_call_output` items.
+///
+/// Responses histories can contain placeholders around tool outputs. The first
+/// pass reconstructs each `function_call_output` as `assistant(tool_use)` plus
+/// `tool(tool_result)`. This pass drops empty placeholders, folds reconstructed
+/// tool-use blocks into the previous assistant message, and keeps tool results
+/// grouped immediately after the assistant tool calls.
 fn merge_tool_use_messages(messages: Vec<Message>) -> Vec<Message> {
     let mut result: Vec<Message> = Vec::new();
     let mut pending_tool_results: Vec<ContentBlock> = Vec::new();
 
-    for (i, msg) in messages.iter().enumerate() {
-        eprintln!(
-            "  MERGE[{}]: role={:?} blocks={}",
-            i,
-            msg.role,
-            msg.content.len()
-        );
-    }
-
     for msg in messages {
         match msg.role {
             Role::Assistant => {
-                // Flush any pending tool results as a user message
-                if !pending_tool_results.is_empty() {
-                    result.push(Message {
-                        role: Role::User,
-                        content: std::mem::take(&mut pending_tool_results),
-                    });
-                }
-                // Check if this assistant message contains tool_use
                 let has_tool_use = msg
                     .content
                     .iter()
                     .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
                 if has_tool_use {
-                    // This is an assistant message with tool_use - keep it
-                    result.push(msg);
+                    if let Some(last) = result.last_mut() {
+                        if last.role == Role::Assistant {
+                            last.content.extend(msg.content);
+                        } else {
+                            result.push(msg);
+                        }
+                    } else {
+                        result.push(msg);
+                    }
                 } else {
-                    // Empty assistant message - skip it (tool_use will come from FunctionCallOutput)
-                    // But keep it if there's actual text content
+                    if !pending_tool_results.is_empty() {
+                        result.push(Message {
+                            role: Role::Tool,
+                            content: std::mem::take(&mut pending_tool_results),
+                        });
+                    }
+
                     let has_text = msg.content.iter().any(|b| match b {
                         ContentBlock::Text { text, .. } => !text.is_empty(),
                         _ => false,
@@ -406,20 +405,18 @@ fn merge_tool_use_messages(messages: Vec<Message>) -> Vec<Message> {
                 }
             }
             Role::Tool => {
-                // Collect tool results to be emitted as a user message
                 for block in msg.content {
                     pending_tool_results.push(block);
                 }
             }
             Role::User => {
-                // Flush any pending tool results first
                 if !pending_tool_results.is_empty() {
                     result.push(Message {
-                        role: Role::User,
+                        role: Role::Tool,
                         content: std::mem::take(&mut pending_tool_results),
                     });
                 }
-                // Skip empty user messages that are just placeholders
+
                 let is_empty = msg.content.iter().all(|b| match b {
                     ContentBlock::Text { text, .. } => text.is_empty(),
                     _ => false,
@@ -437,18 +434,9 @@ fn merge_tool_use_messages(messages: Vec<Message>) -> Vec<Message> {
     // Flush remaining tool results
     if !pending_tool_results.is_empty() {
         result.push(Message {
-            role: Role::User,
+            role: Role::Tool,
             content: pending_tool_results,
         });
-    }
-
-    for (i, msg) in result.iter().enumerate() {
-        eprintln!(
-            "  MERGE_OUT[{}]: role={:?} blocks={}",
-            i,
-            msg.role,
-            msg.content.len()
-        );
     }
 
     result
@@ -1280,6 +1268,14 @@ mod tests {
         assert_eq!(ir.messages[0].role, Role::User);
         // Second message: assistant
         assert_eq!(ir.messages[1].role, Role::Assistant);
+        assert!(ir.messages[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::Text { text, .. } if text == "Let me check.")));
+        assert!(ir.messages[1]
+            .content
+            .iter()
+            .any(|b| matches!(b, ContentBlock::ToolUse { id, .. } if id == "call_weather_001")));
         // Third message: tool result from function_call_output
         assert_eq!(ir.messages[2].role, Role::Tool);
         match &ir.messages[2].content[0] {
