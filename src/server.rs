@@ -35,6 +35,8 @@ pub struct AppState {
     rate_limiter: Option<RateLimiter>,
     key_limiters: Mutex<HashMap<u64, Arc<KeyLimiter>>>,
     provider_health: Mutex<HashMap<String, Arc<ProviderHealth>>>,
+    /// Cache of tool_use calls: call_id -> (tool_name, tool_input)
+    pub tool_call_cache: Arc<Mutex<HashMap<String, (String, serde_json::Value)>>>,
 }
 
 impl AppState {
@@ -56,6 +58,7 @@ impl AppState {
             rate_limiter,
             key_limiters: Mutex::new(HashMap::new()),
             provider_health: Mutex::new(HashMap::new()),
+            tool_call_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 }
@@ -465,7 +468,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/metrics", axum::routing::get(metrics_handler));
 
     #[cfg(feature = "openai-responses")]
-    let r = r.route("/v1/responses", post(responses_handler));
+    let r = r
+        .route("/v1/responses", post(responses_handler))
+        .route("/responses", post(responses_handler));
 
     r.with_state(state)
 }
@@ -874,7 +879,7 @@ async fn responses_handler(
     let resp_req: openai_responses::ResponsesRequest =
         serde_json::from_value(body).map_err(|e| AppError::bad_request(e.to_string()))?;
     let stream = resp_req.stream;
-    let mut ir_req = openai_responses::responses_to_ir(&resp_req);
+    let mut ir_req = openai_responses::responses_to_ir_with_cache(&resp_req, Some(&state.tool_call_cache));
     strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
@@ -1000,6 +1005,7 @@ async fn handle_responses_stream(
     let response_id = format!("resp-{}", uuid_v4());
     let message_id = format!("msg_{}", uuid_v4());
     let metrics = Arc::clone(state);
+    let tool_cache = Arc::clone(&state.tool_call_cache);
 
     let mut stream_state = openai_responses::ResponsesStreamState {
         response_id,
@@ -1007,6 +1013,7 @@ async fn handle_responses_stream(
         model: display_model.clone(),
         opened_items: HashSet::new(),
         accumulated_text: HashMap::new(),
+        pending_tool_calls: HashMap::new(),
         pending_usage: None,
         completed_sent: Arc::new(AtomicBool::new(false)),
     };
@@ -1034,6 +1041,27 @@ async fn handle_responses_stream(
                     }
                     let events =
                         openai_responses::ir_to_responses_sse(stream_event, &mut stream_state);
+                    // Cache completed tool calls for FunctionCallOutput reconstruction
+                    // Check if any tool calls were just completed (removed from pending_tool_calls)
+                    for (event_type, data) in &events {
+                        if event_type == "response.output_item.done" {
+                            if let Ok(item) = serde_json::from_str::<serde_json::Value>(data) {
+                                if item["item"]["type"].as_str() == Some("function_call") {
+                                    if let (Some(id), Some(name), Some(args)) = (
+                                        item["item"]["id"].as_str(),
+                                        item["item"]["name"].as_str(),
+                                        item["item"]["arguments"].as_str(),
+                                    ) {
+                                        if let Ok(input) = serde_json::from_str::<serde_json::Value>(args) {
+                                            if let Ok(mut cache) = tool_cache.lock() {
+                                                cache.insert(id.to_string(), (name.to_string(), input));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     events
                         .into_iter()
                         .map(|(event_type, data)| {
@@ -1231,7 +1259,7 @@ async fn handle_anthropic_stream(
 
     let prepend = futures::stream::once({
         let model = display_model.clone();
-        async move { Control::Injected(ir::StreamEvent::MessageStart { message_id, model }) }
+        async move { Control::Injected(ir::StreamEvent::MessageStart { message_id, model, input_tokens: None }) }
     });
 
     let adapter_stream = backend_stream.map(Control::Adapter);

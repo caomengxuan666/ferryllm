@@ -206,6 +206,18 @@ enum AnthropicSseEvent {
 #[derive(Debug, Deserialize)]
 struct AnthropicMessageStart {
     id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    usage: Option<AnthropicMsgUsage>,
+}
+
+#[derive(Debug, Deserialize)]
+struct AnthropicMsgUsage {
+    input_tokens: u32,
+    output_tokens: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache_creation_input_tokens: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -233,19 +245,13 @@ enum AnthropicDelta {
     InputJSONDelta { partial_json: String },
     #[serde(rename = "thinking_delta")]
     ThinkingDelta { thinking: String },
+    #[serde(rename = "signature_delta")]
+    SignatureDelta { signature: String },
 }
 
 #[derive(Debug, Deserialize)]
 struct AnthropicMsgDelta {
     stop_reason: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct AnthropicMsgUsage {
-    input_tokens: u32,
-    output_tokens: u32,
-    cache_creation_input_tokens: Option<u32>,
-    cache_read_input_tokens: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -275,6 +281,70 @@ impl AnthropicAdapter {
 
 // --- Translation: IR → Anthropic ---
 
+/// Valid JSON Schema types accepted by Anthropic.
+const VALID_SCHEMA_TYPES: &[&str] = &[
+    "string", "number", "integer", "boolean", "object", "array", "null",
+];
+
+/// Sanitize tool parameters for Anthropic compatibility.
+///
+/// Codex may send tools with non-standard JSON Schema types (e.g., "namespace")
+/// that Anthropic rejects. This function recursively replaces invalid `type`
+/// values with "object" (the closest safe default).
+///
+/// Returns `None` if the entire schema is unsalvageable.
+fn sanitize_tool_parameters(params: &Value) -> Option<Value> {
+    match params {
+        Value::Object(map) => {
+            let mut result = serde_json::Map::new();
+            for (k, v) in map {
+                if k == "type" {
+                    if let Value::String(t) = v {
+                        if VALID_SCHEMA_TYPES.contains(&t.as_str()) {
+                            result.insert(k.clone(), v.clone());
+                        } else {
+                            // Replace invalid type with "object" as safe default
+                            result.insert(k.clone(), Value::String("object".into()));
+                        }
+                    } else if let Value::Array(arr) = v {
+                        // "type": ["string", "null"] — filter invalid entries
+                        let valid: Vec<Value> = arr
+                            .iter()
+                            .filter_map(|item| {
+                                if let Value::String(s) = item {
+                                    if VALID_SCHEMA_TYPES.contains(&s.as_str()) {
+                                        Some(item.clone())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    Some(item.clone())
+                                }
+                            })
+                            .collect();
+                        if valid.is_empty() {
+                            result.insert(k.clone(), Value::Array(vec![Value::String("object".into())]));
+                        } else {
+                            result.insert(k.clone(), Value::Array(valid));
+                        }
+                    } else {
+                        result.insert(k.clone(), v.clone());
+                    }
+                } else {
+                    result.insert(k.clone(), sanitize_tool_parameters(v).unwrap_or(v.clone()));
+                }
+            }
+            Some(Value::Object(result))
+        }
+        Value::Array(arr) => Some(Value::Array(
+            arr.iter()
+                .map(|v| sanitize_tool_parameters(v).unwrap_or(v.clone()))
+                .collect(),
+        )),
+        _ => Some(params.clone()),
+    }
+}
+
 fn ir_to_anthropic_request(req: &ChatRequest) -> AnthropicRequest {
     let system = req.system.as_ref().map(|s| {
         if req.system_cache_control.is_some() {
@@ -295,14 +365,29 @@ fn ir_to_anthropic_request(req: &ChatRequest) -> AnthropicRequest {
         .map(ir_message_to_anthropic)
         .collect();
 
+    for (i, t) in req.tools.iter().enumerate() {
+    }
+
+    let mut seen_tool_names = std::collections::HashSet::new();
     let tools: Vec<AnthropicTool> = req
         .tools
         .iter()
-        .map(|t| AnthropicTool {
-            name: t.name.clone(),
-            description: t.description.clone(),
-            input_schema: canonical_json(&t.parameters),
-            cache_control: t.cache_control.clone(),
+        .filter_map(|t| {
+            // Deduplicate tools by name (Codex may send duplicates)
+            if !seen_tool_names.insert(t.name.clone()) {
+                return None;
+            }
+            let sanitized = sanitize_tool_parameters(&t.parameters);
+            // Skip tools whose parameters could not be sanitized (e.g., entirely invalid schema)
+            sanitized.map(|input_schema| {
+                debug!(tool_name = %t.name, tool_params = %input_schema, "sending tool to Anthropic");
+                AnthropicTool {
+                    name: t.name.clone(),
+                    description: t.description.clone(),
+                    input_schema: canonical_json(&input_schema),
+                    cache_control: t.cache_control.clone(),
+                }
+            })
         })
         .collect();
 
@@ -484,11 +569,14 @@ fn anthropic_block_to_ir(block: &AnthropicRespBlock) -> ContentBlock {
             text: text.clone(),
             cache_control: None,
         },
-        AnthropicRespBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
-            id: id.clone(),
-            name: name.clone(),
-            input: canonical_json(input),
-            cache_control: None,
+        AnthropicRespBlock::ToolUse { id, name, input } => {
+            debug!(tool_name = %name, tool_id = %id, tool_input = %input, "model returned tool_use");
+            ContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: canonical_json(input),
+                cache_control: None,
+            }
         },
         AnthropicRespBlock::Thinking { thinking } => ContentBlock::Thinking {
             thinking: thinking.clone(),
@@ -731,6 +819,9 @@ impl Adapter for AnthropicAdapter {
 
         let url = format!("{}/v1/messages", self.base_url.read());
         info!(provider = "anthropic", model = %request.model, stream = true, "sending streaming request");
+        // Debug: dump the full request body
+        if let Ok(body) = serde_json::to_string(&native) {
+        }
         if request_shape_debug_enabled(request) {
             debug!(
                 provider = "anthropic",
@@ -759,44 +850,111 @@ impl Adapter for AnthropicAdapter {
             )));
         }
 
-        let stream = resp.bytes_stream().map(|result| {
-            let bytes = result.map_err(|e| AdapterError::StreamError(e.to_string()))?;
-            let text = String::from_utf8_lossy(&bytes);
-            parse_anthropic_sse_line(&text)
-        });
+        // Buffer incomplete SSE events across network chunks.
+        // Anthropic SSE format uses blank lines as event delimiters:
+        //   event: <type>\n
+        //   data: <json>\n
+        //   \n
+        // A single bytes_stream() chunk may contain partial events or multiple events,
+        // so we accumulate lines and emit complete events when we see a blank line.
+        let stream = resp
+            .bytes_stream()
+            .scan(Vec::<u8>::new(), |buf, result| {
+                let bytes = match result {
+                    Ok(b) => b,
+                    Err(e) => return futures::future::ready(Some(Err(
+                        AdapterError::StreamError(e.to_string()),
+                    ))),
+                };
+                buf.extend_from_slice(&bytes);
+
+                // Split on double-newline (SSE event boundary)
+                let mut events = Vec::new();
+                while let Some(pos) = find_double_newline(buf) {
+                    let event_bytes = buf[..pos].to_vec();
+                    buf.drain(..pos + 2); // skip the \n\n
+                    if !event_bytes.is_empty() {
+                        events.push(String::from_utf8_lossy(&event_bytes).to_string());
+                    }
+                }
+                futures::future::ready(Some(Ok(events)))
+            })
+            .flat_map(|result| match result {
+                Ok(events) => {
+                    let items: Vec<Result<String, AdapterError>> =
+                        events.into_iter().map(Ok).collect();
+                    futures::stream::iter(items)
+                }
+                Err(e) => {
+                    let items: Vec<Result<String, AdapterError>> = vec![Err(e)];
+                    futures::stream::iter(items)
+                }
+            })
+            .map(|result: Result<String, AdapterError>| {
+                let text = result?;
+                parse_anthropic_sse_line(&text)
+            })
+            .filter_map(|result| async move {
+                match result {
+                    Ok(Some(event)) => Some(Ok(event)),
+                    Ok(None) => None,
+                    Err(e) => Some(Err(e)),
+                }
+            });
 
         Ok(Box::pin(stream))
     }
 }
 
-fn parse_anthropic_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
+/// Find the position of a double-newline (`\n\n` or `\r\n\r\n`) in a byte buffer.
+/// Returns the index of the first `\n` in the delimiter, or None if not found.
+fn find_double_newline(buf: &[u8]) -> Option<usize> {
+    for i in 0..buf.len().saturating_sub(1) {
+        if buf[i] == b'\n' && buf[i + 1] == b'\n' {
+            return Some(i);
+        }
+        if i + 3 < buf.len()
+            && buf[i] == b'\r'
+            && buf[i + 1] == b'\n'
+            && buf[i + 2] == b'\r'
+            && buf[i + 3] == b'\n'
+        {
+            return Some(i + 2); // point to the second \n
+        }
+    }
+    None
+}
+
+fn parse_anthropic_sse_line(line: &str) -> Result<Option<StreamEvent>, AdapterError> {
     let line = line.trim();
     if line.is_empty() {
-        return Err(AdapterError::StreamError("empty SSE line".into()));
+        return Ok(None); // Empty line - skip
     }
 
     // Anthropic SSE format: "event: <type>\ndata: <json>"
-    let mut _event_type = None;
+    // Some lines may be just "event: <type>" without data (e.g., ping events) - skip those
     let mut data = None;
 
     for sub_line in line.lines() {
-        if let Some(et) = sub_line.strip_prefix("event: ") {
-            _event_type = Some(et.trim().to_string());
-        } else if let Some(d) = sub_line.strip_prefix("data: ") {
+        if let Some(d) = sub_line.strip_prefix("data: ") {
             data = Some(d.trim().to_string());
         }
     }
 
-    let data = data.ok_or_else(|| AdapterError::StreamError("no data field in SSE".into()))?;
-    trace!(provider = "anthropic", sse_line = %data, "parsing sse line");
+    // If no data field found, this might be a ping or other event without data - skip
+    let data = match data {
+        Some(d) => d,
+        None => return Ok(None),
+    };
     let event: AnthropicSseEvent = serde_json::from_str(&data)
         .map_err(|e| AdapterError::TranslationError(format!("parse SSE event: {e}")))?;
 
-    match event {
-        AnthropicSseEvent::MessageStart { message } => Ok(StreamEvent::MessageStart {
+    let result = match event {
+        AnthropicSseEvent::MessageStart { message } => StreamEvent::MessageStart {
             message_id: message.id,
             model: String::new(),
-        }),
+            input_tokens: message.usage.as_ref().map(|u| u.input_tokens),
+        },
         AnthropicSseEvent::ContentBlockStart {
             index,
             content_block,
@@ -817,10 +975,10 @@ fn parse_anthropic_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
                     cache_control: None,
                 },
             };
-            Ok(StreamEvent::ContentBlockStart {
+            StreamEvent::ContentBlockStart {
                 index,
                 content_block: block,
-            })
+            }
         }
         AnthropicSseEvent::ContentBlockDelta { index, delta } => {
             let delta = match delta {
@@ -831,13 +989,15 @@ fn parse_anthropic_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
                 AnthropicDelta::ThinkingDelta { thinking } => {
                     ContentDelta::ThinkingDelta { thinking }
                 }
+                AnthropicDelta::SignatureDelta { .. } => {
+                    // Signature deltas are metadata for thinking blocks; skip silently.
+                    return Ok(None);
+                }
             };
-            Ok(StreamEvent::ContentBlockDelta { index, delta })
+            StreamEvent::ContentBlockDelta { index, delta }
         }
-        AnthropicSseEvent::ContentBlockStop { index } => {
-            Ok(StreamEvent::ContentBlockStop { index })
-        }
-        AnthropicSseEvent::MessageDelta { delta, usage } => Ok(StreamEvent::MessageDelta {
+        AnthropicSseEvent::ContentBlockStop { index } => StreamEvent::ContentBlockStop { index },
+        AnthropicSseEvent::MessageDelta { delta, usage } => StreamEvent::MessageDelta {
             stop_reason: delta.stop_reason,
             usage: usage.map(|u| Usage {
                 prompt_tokens: u.input_tokens,
@@ -847,13 +1007,15 @@ fn parse_anthropic_sse_line(line: &str) -> Result<StreamEvent, AdapterError> {
                 cache_creation_input_tokens: u.cache_creation_input_tokens,
                 cache_read_input_tokens: u.cache_read_input_tokens,
             }),
-        }),
-        AnthropicSseEvent::MessageStop => Ok(StreamEvent::MessageStop),
-        AnthropicSseEvent::Error { error } => Ok(StreamEvent::Error {
+        },
+        AnthropicSseEvent::MessageStop => StreamEvent::MessageStop,
+        AnthropicSseEvent::Error { error } => StreamEvent::Error {
             code: error.ty,
             message: error.message,
-        }),
-    }
+        },
+    };
+
+    Ok(Some(result))
 }
 
 #[cfg(test)]

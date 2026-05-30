@@ -190,6 +190,8 @@ pub enum StreamEvent {
     MessageStart {
         message_id: String,
         model: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        input_tokens: Option<u32>,
     },
     ContentBlockStart {
         index: u32,

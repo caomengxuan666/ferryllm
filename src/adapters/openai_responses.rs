@@ -136,6 +136,8 @@ struct ResponsesSseEvent {
     delta: Option<String>,
 }
 
+// --- Response parsing helpers ---
+
 pub struct OpenaiResponsesAdapter {
     client: Client,
     base_url: ApiKey,
@@ -523,7 +525,11 @@ impl Adapter for OpenaiResponsesAdapter {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let _ = tx.send(Ok(StreamEvent::MessageStart { message_id, model }));
+            let _ = tx.send(Ok(StreamEvent::MessageStart {
+                message_id,
+                model,
+                input_tokens: None,
+            }));
             let mut buffer = String::new();
             let mut text_started = false;
             let mut tool_index = 1u32;
@@ -549,6 +555,7 @@ impl Adapter for OpenaiResponsesAdapter {
                             continue;
                         }
                         let Ok(event) = serde_json::from_str::<ResponsesSseEvent>(data) else {
+                            trace!(provider = "openai_responses", raw_event = %data, "failed to parse SSE event as ResponsesSseEvent");
                             continue;
                         };
                         handle_responses_sse_event(
@@ -562,12 +569,25 @@ impl Adapter for OpenaiResponsesAdapter {
                 }
             }
             if text_started {
+                debug!(
+                    provider = "openai_responses",
+                    "stream ending: emitting ContentBlockStop for text block"
+                );
                 let _ = tx.send(Ok(StreamEvent::ContentBlockStop { index: 0 }));
+            } else {
+                debug!(
+                    provider = "openai_responses",
+                    "stream ending: text was never started"
+                );
             }
             let _ = tx.send(Ok(StreamEvent::MessageDelta {
                 stop_reason: Some("end_turn".into()),
                 usage: seen_usage,
             }));
+            debug!(
+                provider = "openai_responses",
+                "stream ending: emitting MessageStop"
+            );
             let _ = tx.send(Ok(StreamEvent::MessageStop));
         });
 
@@ -590,9 +610,14 @@ fn handle_responses_sse_event(
     tool_index: &mut u32,
     seen_usage: &mut Option<Usage>,
 ) {
+    trace!(provider = "openai_responses", event_type = %event.ty, "received upstream SSE event");
     match event.ty.as_str() {
         "response.output_text.delta" => {
             if !*text_started {
+                debug!(
+                    provider = "openai_responses",
+                    "first text delta: emitting ContentBlockStart"
+                );
                 let _ = tx.send(Ok(StreamEvent::ContentBlockStart {
                     index: 0,
                     content_block: ContentBlock::Text {
@@ -603,11 +628,19 @@ fn handle_responses_sse_event(
                 *text_started = true;
             }
             if let Some(delta) = event.delta {
+                trace!(provider = "openai_responses", text_fragment = %delta, "sending text delta");
                 let _ = tx.send(Ok(StreamEvent::ContentBlockDelta {
                     index: 0,
                     delta: ContentDelta::TextDelta { text: delta },
                 }));
             }
+        }
+        "response.output_text.done" => {
+            debug!(
+                provider = "openai_responses",
+                "output_text.done: emitting ContentBlockStop for text block"
+            );
+            let _ = tx.send(Ok(StreamEvent::ContentBlockStop { index: 0 }));
         }
         "response.output_item.done" => {
             if let Some(item) = event.item {

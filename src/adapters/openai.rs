@@ -156,7 +156,7 @@ struct OpenAIRespMessage {
     role: Option<String>,
     content: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<OpenAIToolCallResp>,
+    tool_calls: Option<Vec<OpenAIToolCallResp>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,7 +165,7 @@ struct OpenAIRespDelta {
     role: Option<String>,
     content: Option<String>,
     #[serde(default)]
-    tool_calls: Vec<OpenAIToolCallDelta>,
+    tool_calls: Option<Vec<OpenAIToolCallDelta>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -577,7 +577,7 @@ fn openai_message_to_blocks(msg: &OpenAIRespMessage) -> Vec<ContentBlock> {
         }
     }
 
-    for tc in &msg.tool_calls {
+    for tc in msg.tool_calls.iter().flatten() {
         let input: Value = serde_json::from_str(&tc.function.arguments).unwrap_or(Value::Null);
         blocks.push(ContentBlock::ToolUse {
             id: tc.id.clone(),
@@ -983,7 +983,7 @@ fn parse_openai_sse_line_events(
                 // emitting interleaved ContentBlockStart/Delta.  We will
                 // emit complete tool blocks in index order once
                 // finish_reason arrives.
-                for tc in d.tool_calls {
+                for tc in d.tool_calls.into_iter().flatten() {
                     let tool_index = tc.index;
                     let buf = tool_state.tools.entry(tool_index).or_default();
 

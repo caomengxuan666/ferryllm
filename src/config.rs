@@ -444,20 +444,20 @@ impl Config {
 
             match provider.provider_type {
                 ProviderType::Openai => {
-                    let adapter =
-                        Arc::new(OpenaiAdapter::new(provider.base_url.clone(), api_key));
+                    let adapter = Arc::new(OpenaiAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 #[cfg(feature = "openai-responses")]
                 ProviderType::OpenaiResponses => {
-                    let adapter =
-                        Arc::new(OpenaiResponsesAdapter::new(provider.base_url.clone(), api_key));
+                    let adapter = Arc::new(OpenaiResponsesAdapter::new(
+                        provider.base_url.clone(),
+                        api_key,
+                    ));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 #[cfg(feature = "gemini")]
                 ProviderType::Gemini => {
-                    let adapter =
-                        Arc::new(GeminiAdapter::new(provider.base_url.clone(), api_key));
+                    let adapter = Arc::new(GeminiAdapter::new(provider.base_url.clone(), api_key));
                     router.register_adapter_as(&provider.name, adapter);
                 }
                 ProviderType::Anthropic => {
@@ -542,10 +542,7 @@ fn resolve_key_from_watch(
 
 /// Try each `key_watch` entry in order; return the first base URL found.
 /// Returns `None` if no `url_path` is configured or no value is found.
-fn resolve_url_from_watch(
-    watches: &[KeyWatchConfig],
-    _provider_name: &str,
-) -> Option<String> {
+fn resolve_url_from_watch(watches: &[KeyWatchConfig], _provider_name: &str) -> Option<String> {
     for watch in watches {
         let url_path = watch.url_path.as_ref()?;
         match extract_key_from_file(&watch.file, url_path) {
@@ -558,9 +555,8 @@ fn resolve_url_from_watch(
 
 /// Read a JSON or TOML file and extract a value at the given dotted path.
 fn extract_key_from_file(file_path: &str, dotted_path: &str) -> Result<String, ConfigError> {
-    let content = std::fs::read_to_string(file_path).map_err(|e| {
-        ConfigError::Invalid(format!("failed to read '{}': {}", file_path, e))
-    })?;
+    let content = std::fs::read_to_string(file_path)
+        .map_err(|e| ConfigError::Invalid(format!("failed to read '{}': {}", file_path, e)))?;
 
     let value: serde_json::Value = if file_path.ends_with(".json") {
         serde_json::from_str(&content).map_err(|e| {
@@ -699,11 +695,10 @@ pub struct KeyFileWatcher {
 
 /// Start file-system watchers for every provider that uses `api_key_file` or `key_watch`.
 /// Returns a Vec of handles; dropping a handle stops that watcher.
-pub fn start_key_watchers(
-    config: &Config,
-    router: &Router,
-) -> Vec<KeyFileWatcher> {
-    use notify::{Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+pub fn start_key_watchers(config: &Config, router: &Router) -> Vec<KeyFileWatcher> {
+    use notify::{
+        Config as NotifyConfig, Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher,
+    };
     use std::sync::mpsc;
 
     let mut watchers = Vec::new();
@@ -732,7 +727,9 @@ pub fn start_key_watchers(
                             a.update_api_key(key);
                             tracing::info!(provider = %name, "api key reloaded from file");
                         }
-                        Err(e) => tracing::warn!(provider = %name, error = %e, "failed to reload api key"),
+                        Err(e) => {
+                            tracing::warn!(provider = %name, error = %e, "failed to reload api key")
+                        }
                     }
                 }),
             ));
@@ -818,7 +815,9 @@ pub fn start_key_watchers(
 
             let (tx, rx) = mpsc::channel::<notify::Result<Event>>();
             let mut watcher = match RecommendedWatcher::new(
-                move |res: notify::Result<Event>| { let _ = tx.send(res); },
+                move |res: notify::Result<Event>| {
+                    let _ = tx.send(res);
+                },
                 NotifyConfig::default(),
             ) {
                 Ok(w) => w,
