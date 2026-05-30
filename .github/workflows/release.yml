@@ -169,7 +169,7 @@ jobs:
         id: version
         shell: bash
         run: |
-          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1 | tr -d '\r')
           echo "version=$version" >> "$GITHUB_OUTPUT"
 
       - name: Check release tag matches package version
