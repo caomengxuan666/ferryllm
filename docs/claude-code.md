@@ -223,7 +223,7 @@ Therefore, Claude Code may send `claude-opus-4-6`, `claude-haiku-4-5-20251001`, 
 
 ## Recommended Production Setup
 
-For production, use the planned standalone server with a config file instead of hard-coded example code:
+For production, use the config-driven standalone server:
 
 ```toml
 [server]

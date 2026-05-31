@@ -1,6 +1,6 @@
 [package]
 name = "ferryllm-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop control panel for ferryllm"
 authors = ["ferryllm"]
 edition = "2021"

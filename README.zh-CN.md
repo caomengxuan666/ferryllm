@@ -12,10 +12,10 @@ ferryllm 是一个 Rust 编写的 LLM 协议网关。它把不同客户端协议
 ## 它能做什么
 
 - 提供 OpenAI-compatible 入口：`POST /v1/chat/completions`
+- 提供 OpenAI Responses API 入口：`POST /v1/responses`
 - 提供 Anthropic-compatible 入口：`POST /v1/messages`
-- 提供 OpenAI-respones 入口 `POST /v1/responses`
 - 支持模型别名、精确路由和前缀路由
-- 支持转发到 OpenAI-compatible 或 Anthropic 后端
+- 支持转发到 OpenAI-compatible、OpenAI Responses、Anthropic，或可选 Gemini 后端
 - 保留工具调用和 SSE 流式行为
 - 在清理 transport metadata 的同时保持 prompt-cache 前缀稳定
 - 通过 IR 和 adapter 统一 reasoning control
@@ -44,6 +44,10 @@ ferryllm 采用 `N + M` 路由方式：
 ```bash
 cargo install ferryllm
 ```
+
+这只会安装 `ferryllm` CLI。原生桌面 GUI 通过
+[GitHub Releases](https://github.com/caomengxuan666/ferryllm/releases/latest)
+分发。
 
 从源码运行：
 
@@ -105,6 +109,32 @@ claude --bare --print --model claude-opus-4-6 \
 ```text
 pong
 ```
+
+## 桌面 GUI
+
+ferryllm 也提供基于 Tauri 的原生桌面控制面板，可视化编辑配置、启动/停止本地网关、校验配置，并以正确的本地 endpoint 环境变量启动 Codex 或 Claude。
+
+![ferryllm 桌面端 provider 概览](docs/assets/gui-main.png)
+
+桌面端请从 GitHub Releases 安装：
+
+- Windows：下载并运行 `.exe` 或 `.msi` 安装包。
+- macOS：下载并打开 `.dmg`。
+- Linux：下载并安装 `.deb`。
+
+打开应用后，配置 provider，保存配置，然后点击 `Start`。GUI 实际运行的是：
+
+```bash
+ferryllm serve --config <generated-config.toml>
+```
+
+打包后的应用会优先查找内置的 `ferryllm` sidecar，找不到时再使用 `PATH`
+里的 `ferryllm`。`Launch CLI` 和 `VS Code` 会启动 Codex 或 Claude，并把
+`OPENAI_BASE_URL`、`ANTHROPIC_BASE_URL` 或 `GEMINI_BASE_URL` 指向本地网关。
+
+![ferryllm 桌面端 launcher](docs/assets/gui-launcher.png)
+
+![ferryllm 桌面端 provider 设置](docs/assets/gui-provider-detail.png)
 
 更多 Claude Code 和 cc-switch 配置见 [docs/claude-code.md](docs/claude-code.md)。
 
@@ -202,7 +232,9 @@ ferryllm check-config --config examples/config/codexapis.toml
 如需热加载 API key 配置（例如从 cc-switch 设置），请参阅配置文档中的 [key_watch](docs/configuration.md#key-watch-hot-reload-api-keys) 部分。
 
 如果要让 OpenAI-compatible 上游走 Responses API，而不是 Chat Completions，
-需要开启可选 feature，并把 provider type 改成 `openai_responses`：
+把 provider type 改成 `openai_responses` 即可。默认构建，包括
+`cargo install ferryllm`，已经包含这个 adapter。如果你使用
+`--no-default-features` 自定义构建，则需要显式开启 `openai-responses`：
 
 ```bash
 cargo build --release --features http,prompt-observability,openai-responses --bin ferryllm
@@ -238,11 +270,14 @@ default_reasoning_effort = "medium"
 | Endpoint | 用途 |
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat completions |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /responses` | Responses API 兼容别名 |
 | `POST /v1/messages` | Anthropic-compatible messages |
+| `GET /v1/models` | OpenAI-compatible model listing |
 | `GET /health` | 简单健康检查 |
 | `GET /healthz` | Kubernetes 风格 liveness check |
 | `GET /readyz` | readiness check |
-| `GET /metrics` | Prometheus 风格 metrics |
+| `GET /metrics` | 带 provider/model 标签的 Prometheus 风格 metrics |
 
 ## Prompt Cache
 
@@ -302,10 +337,10 @@ cargo run --release --example load_test --features http -- \
 
 ## 路线图
 
-- 更多 provider adapter，包括 Gemini
+- 更多 provider adapter 和 provider 专属调优
 - 支持加权和延迟感知 provider pool
-- 配置热加载
-- 更丰富的 Prometheus metrics 标签
+- 不重启 managed process 的完整配置热加载
+- 更丰富的 Prometheus metrics 维度
 - per-key quota 和 usage accounting hooks
 - 打包好的 Docker 镜像和部署模板
 

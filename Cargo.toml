@@ -1,6 +1,6 @@
 [package]
 name = "ferryllm"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
 description = "Universal LLM protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI-compatible backends."
 license = "MIT"
@@ -10,7 +10,7 @@ documentation = "https://docs.rs/ferryllm"
 readme = "README.md"
 keywords = ["llm", "openai", "anthropic", "proxy", "gateway"]
 categories = ["web-programming::http-server", "api-bindings", "command-line-utilities"]
-exclude = [".claude/", ".codex/", ".agents/", "target/", "session-export.json"]
+exclude = [".claude/", ".codex/", ".agents/", "target/", "desktop/", "session-export.json"]
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }

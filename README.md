@@ -12,9 +12,10 @@ ferryllm is a Rust gateway that normalizes client and provider LLM protocols int
 ## What It Does
 
 - Accepts OpenAI-compatible chat requests at `POST /v1/chat/completions`
+- Accepts OpenAI Responses API requests at `POST /v1/responses`
 - Accepts Anthropic-compatible messages at `POST /v1/messages`
 - Rewrites model names with exact and prefix routing rules
-- Forwards to OpenAI-compatible or Anthropic backend adapters
+- Forwards to OpenAI-compatible, OpenAI Responses, Anthropic, or optional Gemini backend adapters
 - Preserves tool calls and SSE streaming behavior
 - Keeps prompt-cache keys stable while stripping transport metadata
 - Maps reasoning control through the IR and provider adapters
@@ -43,6 +44,9 @@ Install from crates.io:
 ```bash
 cargo install ferryllm
 ```
+
+This installs the `ferryllm` CLI only. Native desktop GUI builds are distributed
+through [GitHub Releases](https://github.com/caomengxuan666/ferryllm/releases/latest).
 
 Run from source:
 
@@ -104,6 +108,36 @@ Expected output:
 ```text
 pong
 ```
+
+## Desktop GUI
+
+ferryllm also ships a native Tauri desktop control panel for editing
+configuration, starting and stopping the local gateway, validating configs, and
+launching Codex or Claude with the right local endpoint environment.
+
+![ferryllm desktop provider overview](docs/assets/gui-main.png)
+
+Install the desktop app from GitHub Releases:
+
+- Windows: download and run the `.exe` or `.msi` installer.
+- macOS: download and open the `.dmg`.
+- Linux: download and install the `.deb`.
+
+After opening the app, configure a provider, save the config, and click
+`Start`. The GUI runs:
+
+```bash
+ferryllm serve --config <generated-config.toml>
+```
+
+The packaged app first looks for the bundled `ferryllm` sidecar, then falls back
+to a `ferryllm` executable on `PATH`. `Launch CLI` and `VS Code` start Codex or
+Claude with `OPENAI_BASE_URL`, `ANTHROPIC_BASE_URL`, or `GEMINI_BASE_URL`
+pointing at the local gateway.
+
+![ferryllm desktop launcher](docs/assets/gui-launcher.png)
+
+![ferryllm desktop provider settings](docs/assets/gui-provider-detail.png)
 
 See [docs/claude-code.md](docs/claude-code.md) for persistent Claude Code and cc-switch setup.
 
@@ -201,8 +235,9 @@ ferryllm check-config --config examples/config/codexapis.toml
 For hot-reload API key configuration (e.g., from cc-switch settings), see the [key_watch](docs/configuration.md#key-watch-hot-reload-api-keys) section in the configuration docs.
 
 To route OpenAI-compatible upstream calls through the Responses API instead of
-Chat Completions, build with the optional feature and use provider type
-`openai_responses`:
+Chat Completions, use provider type `openai_responses`. Default builds,
+including `cargo install ferryllm`, include this adapter. If you build with
+`--no-default-features`, add the `openai-responses` feature explicitly:
 
 ```bash
 cargo build --release --features http,prompt-observability,openai-responses --bin ferryllm
@@ -238,6 +273,8 @@ Run with debug logging and look for `reasoning=effort=...` in the outbound reque
 | Endpoint | Purpose |
 | --- | --- |
 | `POST /v1/chat/completions` | OpenAI-compatible chat completions |
+| `POST /v1/responses` | OpenAI Responses API |
+| `POST /responses` | Responses API compatibility alias |
 | `POST /v1/messages` | Anthropic-compatible messages |
 | `GET /v1/models` | OpenAI-compatible model listing |
 | `GET /health` | Simple health check |
@@ -303,10 +340,10 @@ See [docs/load-testing.md](docs/load-testing.md).
 
 ## Roadmap
 
-- More provider adapters, including Gemini
+- More provider adapters and provider-specific tuning
 - Weighted and latency-aware provider pools
-- Hot-reload configuration
-- Richer Prometheus metrics labels
+- Full config hot reload without managed-process restart
+- Richer Prometheus metrics dimensions
 - Per-key quota and usage accounting hooks
 - Packaged Docker images and deployment templates
 

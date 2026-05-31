@@ -18,7 +18,7 @@ ferryllm serve --config ferryllm.toml
 
 ## Format
 
-TOML is recommended for the first public server release.
+Configuration is loaded from TOML.
 
 Reasons:
 
@@ -60,13 +60,12 @@ api_key_env = "CODX_API_KEY"
 match = "cc-gpt55"
 match_type = "exact"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "claude-"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
-fallback_providers = ["backup-openai"]
+rewrite_model = "gpt-5.4"
 
 [[routes]]
 match = "gpt-"
@@ -75,7 +74,7 @@ provider = "codexapis"
 [[routes]]
 match = "*"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
 ## Server Section
@@ -87,7 +86,10 @@ request_timeout_secs = 120
 body_limit_mb = 32
 max_concurrent_requests = 128
 rate_limit_per_minute = 600
-graceful_shutdown_secs = 30
+retry_attempts = 2
+retry_backoff_ms = 100
+circuit_breaker_failures = 5
+circuit_breaker_cooldown_secs = 30
 ```
 
 Fields:
@@ -97,7 +99,10 @@ Fields:
 - `body_limit_mb`: Maximum request body size.
 - `max_concurrent_requests`: Optional maximum number of in-flight OpenAI/Anthropic chat requests. Requests above the limit return `429`.
 - `rate_limit_per_minute`: Optional global request rate cap. Requests above the limit return `429`.
-- `graceful_shutdown_secs`: Time allowed for in-flight requests during shutdown.
+- `retry_attempts`: Number of retries after the first non-streaming upstream request attempt.
+- `retry_backoff_ms`: Initial retry backoff in milliseconds.
+- `circuit_breaker_failures`: Optional consecutive upstream failure threshold before short-circuiting a provider.
+- `circuit_breaker_cooldown_secs`: Cooldown before retrying a provider whose circuit is open.
 - `default_reasoning_effort`: Optional default reasoning effort applied only when the client does not send an explicit reasoning or thinking control. Valid values are `none`, `low`, `medium`, `high`, `xhigh`, and `x_high`.
 
 `default_reasoning_effort` is a control-plane setting. It is not included in ferryllm's prompt cache key.
@@ -136,8 +141,8 @@ base_url = "https://api.openai.com"
 api_key_env = "OPENAI_API_KEY"
 ```
 
-When built with `--features openai-responses`, an OpenAI-compatible provider can
-also send upstream requests to `/v1/responses`:
+Default builds include the `openai_responses` adapter, so an OpenAI-compatible
+provider can also send upstream requests to `/v1/responses`:
 
 ```toml
 [[providers]]
@@ -154,11 +159,16 @@ the commented fallback if you need the older Chat Completions path.
 Provider fields:
 
 - `name`: Unique provider name used by routes.
-- `type`: Adapter type, for example `openai`, `openai_responses`, or `anthropic`.
+- `type`: Adapter type, for example `openai`, `openai_responses`, `anthropic`, or `gemini` when built with the optional Gemini feature.
 - `base_url`: Provider base URL without endpoint path rewriting in routes.
+- `api_key`: Direct API key value. Prefer an external key source for committed config files.
 - `api_key_env`: Environment variable containing the secret.
+- `api_key_url`: URL returning the secret.
+- `api_key_file`: File containing the secret.
+- `key_watch`: One or more watched files with dotted paths for hot-reloading API keys and optional base URLs.
 
-Provider-specific options can be added later:
+Provider-specific runtime tuning is a future extension and is not currently
+parsed by the config loader:
 
 ```toml
 connect_timeout_secs = 10
@@ -224,7 +234,7 @@ path = "ANTHROPIC_AUTH_TOKEN"
 
 **Notes:**
 
-- A provider can only use one key source: `api_key_env`, `api_key_url`, `api_key_file`, or `key_watch`
+- A provider can only use one key source: `api_key`, `api_key_env`, `api_key_url`, `api_key_file`, or `key_watch`
 - When `key_watch` is used, the server logs the key prefix (first 8 characters) for debugging
 - File change events are logged at trace/debug level
 
@@ -234,7 +244,7 @@ path = "ANTHROPIC_AUTH_TOKEN"
 [[routes]]
 match = "claude-"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
 Route fields:
@@ -258,10 +268,10 @@ Exact alias example:
 match = "cc-gpt55"
 match_type = "exact"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
-A client can now request `cc-gpt55`, while ferryllm sends `gpt-5.5` to the upstream provider.
+A client can now request `cc-gpt55`, while ferryllm sends `gpt-5.4` to the upstream provider.
 
 Prefix mapping example:
 
@@ -270,7 +280,7 @@ Prefix mapping example:
 match = "claude-"
 match_type = "prefix"
 provider = "codexapis"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 ```
 
 This is useful for clients such as Claude Code, which send Anthropic model names even when the backend is not Anthropic.
@@ -295,7 +305,7 @@ api_key_env = "BACKUP_API_KEY"
 [[routes]]
 match = "claude-"
 provider = "primary"
-rewrite_model = "gpt-5.5"
+rewrite_model = "gpt-5.4"
 fallback_providers = ["backup"]
 ```
 
@@ -314,7 +324,7 @@ strategy = "fallback"
 
 [[routes.targets]]
 provider = "primary"
-model = "gpt-5.5"
+model = "gpt-5.4"
 
 [[routes.targets]]
 provider = "backup"

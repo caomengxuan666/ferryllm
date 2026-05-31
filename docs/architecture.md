@@ -22,6 +22,14 @@ Anthropic client
   -> router.resolve(model)
   -> backend adapter
   -> provider API
+
+Codex / Responses API client
+  -> POST /v1/responses
+  -> entry/openai_responses
+  -> IR
+  -> router.resolve(model)
+  -> backend adapter
+  -> provider API
 ```
 
 ## Core Components
@@ -38,6 +46,10 @@ Translates OpenAI-compatible client requests into IR and IR responses back into 
 
 Translates Anthropic-compatible client requests into IR and IR responses back into Anthropic-compatible responses.
 
+`entry/openai_responses.rs`
+
+Translates OpenAI Responses API requests into IR and IR responses back into Responses API responses.
+
 `adapter.rs`
 
 Defines the backend adapter trait. Each provider adapter implements non-streaming chat and streaming chat.
@@ -50,6 +62,14 @@ Translates IR into OpenAI-compatible backend requests and parses OpenAI-compatib
 
 Translates IR into Anthropic backend requests and parses Anthropic responses.
 
+`adapters/openai_responses.rs`
+
+Translates IR into OpenAI-compatible Responses API backend requests and parses Responses API responses.
+
+`adapters/gemini.rs`
+
+Translates IR into Gemini backend requests when built with the optional `gemini` feature.
+
 `router.rs`
 
 Selects the provider and backend model based on the incoming model name.
@@ -60,7 +80,7 @@ Exposes HTTP routes and connects entry translation, routing, backend calls, and 
 
 ## Model Routing
 
-Routing is prefix-based in the current implementation.
+Routing supports exact and prefix matches.
 
 Example:
 
@@ -68,7 +88,7 @@ Example:
 incoming model: claude-opus-4-6
 matched prefix: claude-
 provider: openai
-backend model: gpt-5.5
+backend model: gpt-5.4
 ```
 
 This lets an Anthropic-compatible client use an OpenAI-compatible backend without changing the client.
