@@ -1279,6 +1279,7 @@ async fn handle_anthropic_stream(
     use std::sync::atomic::AtomicBool;
     let mut started_text_blocks: HashSet<u32> = HashSet::new();
     let closing_sent = Arc::new(AtomicBool::new(false));
+    let mut message_start_sent = false;
 
     // Anthropic requires consecutive content-block indices without gaps or
     // overlaps. The OpenAI adapter may emit text at choice.index (0) and
@@ -1313,9 +1314,34 @@ async fn handle_anthropic_stream(
                 }
             };
 
+            if matches!(event, ir::StreamEvent::MessageStart { .. }) {
+                if message_start_sent {
+                    return Vec::new();
+                }
+                message_start_sent = true;
+            }
+
             // Normalise content-block indices so they are consecutive
             // starting from 0 and never overlap.
             let event = match event {
+                ir::StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: block @ ir::ContentBlock::Text { .. },
+                } => {
+                    if started_text_blocks.contains(&index) {
+                        return Vec::new();
+                    }
+                    let output_index = *index_remap.entry(index).or_insert_with(|| {
+                        let next = next_output_index;
+                        next_output_index += 1;
+                        next
+                    });
+                    started_text_blocks.insert(index);
+                    ir::StreamEvent::ContentBlockStart {
+                        index: output_index,
+                        content_block: block,
+                    }
+                }
                 ir::StreamEvent::ContentBlockDelta {
                     index,
                     delta: ir::ContentDelta::TextDelta { text },

@@ -446,7 +446,8 @@ impl Adapter for OpenaiResponsesAdapter {
 
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, AdapterError> {
         let native = ir_to_responses_request(request);
-        let url = format!("{}/v1/responses", self.base_url.read());
+        let base_url = self.base_url.read();
+        let url = format!("{}/v1/responses", base_url.trim_end_matches('/'));
         info!(provider = "openai_responses", model = %request.model, stream = request.stream, "sending responses request");
         trace!(provider = "openai_responses", url = %url, body_model = %native.model, "responses request prepared");
         if request_shape_debug_enabled(request) {
@@ -490,7 +491,8 @@ impl Adapter for OpenaiResponsesAdapter {
     {
         let mut native = ir_to_responses_request(request);
         native.stream = true;
-        let url = format!("{}/v1/responses", self.base_url.read());
+        let base_url = self.base_url.read();
+        let url = format!("{}/v1/responses", base_url.trim_end_matches('/'));
         info!(provider = "openai_responses", model = %request.model, stream = true, "sending streaming responses request");
         if request_shape_debug_enabled(request) {
             debug!(
@@ -640,7 +642,10 @@ fn handle_responses_sse_event(
                 provider = "openai_responses",
                 "output_text.done: emitting ContentBlockStop for text block"
             );
-            let _ = tx.send(Ok(StreamEvent::ContentBlockStop { index: 0 }));
+            if *text_started {
+                let _ = tx.send(Ok(StreamEvent::ContentBlockStop { index: 0 }));
+                *text_started = false;
+            }
         }
         "response.output_item.done" => {
             if let Some(item) = event.item {

@@ -1,11 +1,13 @@
 use std::{
     collections::VecDeque,
     env, fs,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Read, Write},
+    net::TcpStream,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Mutex,
+    sync::{Arc, Mutex},
     thread,
+    time::{Duration, Instant},
 };
 
 use serde::{Deserialize, Serialize};
@@ -14,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 const MAX_LOG_LINES: usize = 1_000;
 
 struct DesktopState {
-    runtime: Mutex<RuntimeState>,
+    runtime: Arc<Mutex<RuntimeState>>,
 }
 
 #[derive(Default)]
@@ -45,6 +47,36 @@ struct ProcessStatus {
     config_path: String,
     pid: Option<u32>,
     logs: Vec<LogEntry>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ProbeResult {
+    ok: bool,
+    status: Option<u16>,
+    body: String,
+    error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ServerSnapshot {
+    status: ProcessStatus,
+    health: ProbeResult,
+    ready: ProbeResult,
+    metrics: ProbeResult,
+    models: ProbeResult,
+    fetched_at_ms: u128,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct AiSession {
+    id: String,
+    tool: String,
+    cwd: String,
+    path: String,
+    title: String,
+    preview: String,
+    message_count: usize,
+    updated_at_ms: u128,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -81,8 +113,15 @@ struct SaveConfigRequest {
 struct LaunchRequest {
     directory: String,
     listen: String,
-    provider_type: String,
     #[serde(default = "default_tool")]
+    tool: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ResumeSessionRequest {
+    id: String,
+    cwd: String,
+    listen: String,
     tool: String,
 }
 
@@ -90,47 +129,100 @@ fn default_tool() -> String {
     "codex".into()
 }
 
+fn cli_command(tool: &str) -> &'static str {
+    match tool {
+        "claude" => "claude",
+        "opencode" => "opencode",
+        _ => "codex",
+    }
+}
+
+fn claude_setting_sources_arg() -> &'static str {
+    "project,local"
+}
+
+fn launch_args(tool: &str) -> Vec<String> {
+    match tool {
+        "claude" => vec![
+            "--setting-sources".into(),
+            claude_setting_sources_arg().into(),
+            "--model".into(),
+            "claude-sonnet-4-5".into(),
+        ],
+        _ => Vec::new(),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct SyncConfigRequest {
     config: serde_json::Value,
 }
 
-#[tauri::command]
-fn write_config_to_default(request: SyncConfigRequest) -> Result<String, String> {
-    let dir = dirs::config_dir()
-        .ok_or("cannot find config directory")?
-        .join("ferryllm");
-    fs::create_dir_all(&dir).map_err(string_error)?;
-    let path = dir.join("config.toml");
-    let toml = toml::to_string_pretty(&request.config).map_err(string_error)?;
-    fs::write(&path, toml).map_err(string_error)?;
-    Ok(path_to_string(&path))
+#[derive(Debug, Deserialize)]
+struct ValidateConfigRequest {
+    executable: Option<String>,
+    config: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct ProviderProbeRequest {
+    name: String,
+    #[serde(rename = "type")]
+    provider_type: String,
+    base_url: String,
+    #[serde(default)]
+    api_key: Option<String>,
+    #[serde(default)]
+    api_key_env: Option<String>,
+    #[serde(default)]
+    api_key_file: Option<String>,
+    mode: String,
 }
 
 #[tauri::command]
-fn save_config_to_default(request: SyncConfigRequest) -> Result<(), String> {
-    let dir = dirs::config_dir()
-        .ok_or("cannot find config directory")?
-        .join("ferryllm");
-    fs::create_dir_all(&dir).map_err(string_error)?;
-    let path = dir.join("config.json");
-    let json = serde_json::to_string_pretty(&request.config).map_err(string_error)?;
-    fs::write(&path, json).map_err(string_error)?;
-    Ok(())
+async fn write_config_to_default(request: SyncConfigRequest) -> Result<String, String> {
+    spawn_blocking_result(move || {
+        let path = default_config_toml_path()?;
+        if let Some(dir) = path.parent() {
+            fs::create_dir_all(dir).map_err(string_error)?;
+        }
+        let toml = toml::to_string_pretty(&request.config).map_err(string_error)?;
+        fs::write(&path, toml).map_err(string_error)?;
+        Ok(path_to_string(&path))
+    })
+    .await
 }
 
 #[tauri::command]
-fn load_config_from_default() -> Result<Option<String>, String> {
-    let path = dirs::config_dir()
-        .ok_or("cannot find config directory")?
-        .join("ferryllm")
-        .join("config.json");
-    if path.exists() {
-        let content = fs::read_to_string(&path).map_err(string_error)?;
-        Ok(Some(content))
-    } else {
-        Ok(None)
-    }
+async fn save_config_to_default(request: SyncConfigRequest) -> Result<(), String> {
+    spawn_blocking_result(move || {
+        let dir = dirs::config_dir()
+            .ok_or("cannot find config directory")?
+            .join("ferryllm");
+        fs::create_dir_all(&dir).map_err(string_error)?;
+        let path = dir.join("config.json");
+        let json = serde_json::to_string_pretty(&request.config).map_err(string_error)?;
+        fs::write(&path, json).map_err(string_error)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn load_config_from_default() -> Result<Option<String>, String> {
+    spawn_blocking_result(move || {
+        let path = dirs::config_dir()
+            .ok_or("cannot find config directory")?
+            .join("ferryllm")
+            .join("config.json");
+        if path.exists() {
+            let content = fs::read_to_string(&path).map_err(string_error)?;
+            Ok(Some(content))
+        } else {
+            Ok(None)
+        }
+    })
+    .await
 }
 
 #[derive(Debug, Deserialize)]
@@ -139,28 +231,117 @@ struct ServerRequest {
     config_path: String,
 }
 
+#[derive(Debug, Deserialize)]
+struct WorkspacePathRequest {
+    path: String,
+}
+
 #[tauri::command]
-fn launch_cli(request: LaunchRequest) -> Result<(), String> {
-    let base_url = format_base_url(&request.listen, &request.provider_type);
-    let (key_name, base_name) = env_var_names(&request.provider_type);
-    let cli_cmd = if request.tool == "claude" { "claude" } else { "codex" };
+async fn create_workspace(request: WorkspacePathRequest) -> Result<(), String> {
+    spawn_blocking_result(move || {
+        let path = PathBuf::from(request.path);
+        fs::create_dir_all(&path).map_err(string_error)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_workspace(request: WorkspacePathRequest) -> Result<(), String> {
+    spawn_blocking_result(move || {
+        let path = PathBuf::from(request.path);
+        if !path.exists() {
+            return Ok(());
+        }
+        if !path.is_dir() {
+            return Err(format!("workspace is not a directory: {}", path_to_string(&path)));
+        }
+        fs::remove_dir_all(&path).map_err(string_error)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_ai_session(request: WorkspacePathRequest) -> Result<(), String> {
+    spawn_blocking_result(move || {
+        let path = PathBuf::from(request.path);
+        if !path.exists() {
+            return Ok(());
+        }
+        if !path.is_file() {
+            return Err(format!("session path is not a file: {}", path_to_string(&path)));
+        }
+        fs::remove_file(&path).map_err(string_error)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reveal_workspace(request: WorkspacePathRequest) -> Result<(), String> {
+    spawn_blocking_result(move || reveal_workspace_inner(request)).await
+}
+
+fn reveal_workspace_inner(request: WorkspacePathRequest) -> Result<(), String> {
+    let path = PathBuf::from(request.path);
+    if !path.exists() {
+        return Err(format!("workspace does not exist: {}", path_to_string(&path)));
+    }
 
     #[cfg(windows)]
     {
-        Command::new("cmd")
-            .args(["/C", "start", "cmd", "/K", cli_cmd])
-            .current_dir(&request.directory)
-            .env(key_name, "ferryllm")
-            .env(base_name, &base_url)
+        Command::new("explorer")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to open Explorer: {}", e))?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to open Finder: {}", e))?;
+    }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| format!("failed to open file manager: {}", e))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn launch_cli(request: LaunchRequest) -> Result<(), String> {
+    spawn_blocking_result(move || launch_cli_inner(request)).await
+}
+
+fn launch_cli_inner(request: LaunchRequest) -> Result<(), String> {
+    let env = client_gateway_env(&request.listen, &request.tool);
+    let cli_cmd = cli_command(&request.tool);
+    let args = launch_args(&request.tool);
+
+    #[cfg(windows)]
+    {
+        let command_line = windows_cli_command_line(cli_cmd, &args);
+        let mut command = Command::new("cmd");
+        command
+            .args(["/C", "start", "", "cmd", "/K"])
+            .arg(command_line)
+            .current_dir(&request.directory);
+        apply_client_env(&mut command, &env);
+        command
             .spawn()
             .map_err(|e| format!("failed to launch CLI: {}", e))?;
     }
     #[cfg(not(windows))]
     {
-        Command::new("sh")
-            .args(["-c", &format!("cd '{}' && {}", request.directory, cli_cmd)])
-            .env(key_name, "ferryllm")
-            .env(base_name, &base_url)
+        let mut command = Command::new(cli_cmd);
+        command.args(&args).current_dir(&request.directory);
+        apply_client_env(&mut command, &env);
+        command
             .spawn()
             .map_err(|e| format!("failed to launch CLI: {}", e))?;
     }
@@ -168,9 +349,312 @@ fn launch_cli(request: LaunchRequest) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn launch_vscode(request: LaunchRequest) -> Result<(), String> {
-    let base_url = format_base_url(&request.listen, &request.provider_type);
-    let (key_name, base_name) = env_var_names(&request.provider_type);
+async fn launch_vscode(request: LaunchRequest) -> Result<(), String> {
+    spawn_blocking_result(move || launch_vscode_inner(request)).await
+}
+
+#[tauri::command]
+async fn scan_ai_sessions() -> Result<Vec<AiSession>, String> {
+    spawn_blocking_result(scan_ai_sessions_inner).await
+}
+
+#[tauri::command]
+async fn resume_ai_session(request: ResumeSessionRequest) -> Result<(), String> {
+    spawn_blocking_result(move || resume_ai_session_inner(request)).await
+}
+
+fn scan_ai_sessions_inner() -> Result<Vec<AiSession>, String> {
+    let home = dirs::home_dir().ok_or("cannot find home directory")?;
+    let mut sessions = Vec::new();
+    collect_codex_sessions(&home.join(".codex").join("sessions"), &mut sessions);
+    collect_claude_sessions(&home.join(".claude").join("projects"), &mut sessions);
+    sessions.sort_by(|a, b| b.updated_at_ms.cmp(&a.updated_at_ms));
+    sessions.truncate(300);
+    Ok(sessions)
+}
+
+fn resume_ai_session_inner(request: ResumeSessionRequest) -> Result<(), String> {
+    let env = client_gateway_env(&request.listen, &request.tool);
+    let cli_cmd = cli_command(&request.tool);
+    let args: Vec<String> = if request.tool == "claude" {
+        vec![
+            "--setting-sources".into(),
+            claude_setting_sources_arg().into(),
+            "--model".into(),
+            "claude-sonnet-4-5".into(),
+            "--resume".into(),
+            request.id.clone(),
+        ]
+    } else {
+        vec!["resume".into(), request.id.clone()]
+    };
+
+    #[cfg(windows)]
+    {
+        let command_line = windows_cli_command_line(cli_cmd, &args);
+        let mut command = Command::new("cmd");
+        command
+            .args(["/C", "start", "", "cmd", "/K"])
+            .arg(command_line)
+            .current_dir(&request.cwd);
+        apply_client_env(&mut command, &env);
+        command
+            .spawn()
+            .map_err(|e| format!("failed to resume session: {}", e))?;
+    }
+    #[cfg(not(windows))]
+    {
+        let mut command = Command::new(cli_cmd);
+        command.args(args).current_dir(&request.cwd);
+        apply_client_env(&mut command, &env);
+        command
+            .spawn()
+            .map_err(|e| format!("failed to resume session: {}", e))?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn windows_cli_command_line(cli_cmd: &str, args: &[String]) -> String {
+    let mut command_line = cli_cmd.to_string();
+    for arg in args {
+        command_line.push(' ');
+        command_line.push_str(&windows_cmd_quote_arg(arg));
+    }
+    command_line
+}
+
+#[cfg(windows)]
+fn windows_cmd_quote_arg(arg: &str) -> String {
+    if !arg.is_empty()
+        && !arg
+            .chars()
+            .any(|ch| ch.is_whitespace() || matches!(ch, '&' | '|' | '<' | '>' | '^' | '"'))
+    {
+        return arg.to_string();
+    }
+    format!("\"{}\"", arg.replace('"', "\\\""))
+}
+
+fn collect_codex_sessions(root: &Path, sessions: &mut Vec<AiSession>) {
+    for path in jsonl_files(root, 800) {
+        let Ok(file) = fs::File::open(&path) else { continue };
+        let mut reader = BufReader::new(file);
+        let mut line = String::new();
+        if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
+            continue;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let Some(payload) = value.get("payload") else { continue };
+        let Some(id) = payload.get("id").and_then(|v| v.as_str()) else { continue };
+        let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else { continue };
+        let (preview, message_count) = scan_session_preview(&mut reader, "codex", 220);
+        sessions.push(AiSession {
+            id: id.to_string(),
+            tool: "codex".into(),
+            cwd: cwd.to_string(),
+            path: path_to_string(&path),
+            title: session_title_from_path(&path, id),
+            preview,
+            message_count,
+            updated_at_ms: file_modified_ms(&path),
+        });
+    }
+}
+
+fn collect_claude_sessions(root: &Path, sessions: &mut Vec<AiSession>) {
+    for path in jsonl_files(root, 800) {
+        let Ok(file) = fs::File::open(&path) else { continue };
+        let reader = BufReader::new(file);
+        let mut found: Option<AiSession> = None;
+        let mut preview = String::new();
+        let mut message_count = 0usize;
+        for line in reader.lines().map_while(Result::ok).take(40) {
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let (line_preview, line_message_count) = session_preview_from_value(&value, "claude");
+            message_count += line_message_count;
+            if preview.is_empty() {
+                preview = line_preview;
+            }
+            let id = value
+                .get("sessionId")
+                .and_then(|v| v.as_str())
+                .or_else(|| value.get("session_id").and_then(|v| v.as_str()));
+            let cwd = value.get("cwd").and_then(|v| v.as_str());
+            if let (Some(id), Some(cwd)) = (id, cwd) {
+                found = Some(AiSession {
+                    id: id.to_string(),
+                    tool: "claude".into(),
+                    cwd: cwd.to_string(),
+                    path: path_to_string(&path),
+                    title: session_title_from_path(&path, id),
+                    preview: preview.clone(),
+                    message_count,
+                    updated_at_ms: file_modified_ms(&path),
+                });
+                break;
+            }
+        }
+        if let Some(session) = found {
+            sessions.push(session);
+        }
+    }
+}
+
+fn scan_session_preview<R: BufRead>(reader: &mut R, tool: &str, max_lines: usize) -> (String, usize) {
+    let mut preview = String::new();
+    let mut message_count = 0usize;
+    let mut line = String::new();
+    for _ in 0..max_lines {
+        line.clear();
+        let Ok(bytes) = reader.read_line(&mut line) else { break };
+        if bytes == 0 {
+            break;
+        }
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let (line_preview, line_message_count) = session_preview_from_value(&value, tool);
+        message_count += line_message_count;
+        if preview.is_empty() {
+            preview = line_preview;
+        }
+    }
+    (preview, message_count)
+}
+
+fn session_preview_from_value(value: &serde_json::Value, tool: &str) -> (String, usize) {
+    match tool {
+        "claude" => claude_preview_from_value(value),
+        _ => codex_preview_from_value(value),
+    }
+}
+
+fn codex_preview_from_value(value: &serde_json::Value) -> (String, usize) {
+    let Some(payload) = value.get("payload") else { return (String::new(), 0) };
+    let payload_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+    let role = payload.get("role").and_then(|v| v.as_str()).unwrap_or_default();
+    let is_user = role == "user" || payload_type == "user_message" || payload_type == "input_message";
+    let is_event = value.get("type").and_then(|v| v.as_str()) == Some("event_msg");
+    let count = usize::from(is_user || (is_event && payload.get("message").is_some()));
+
+    let text = if is_user {
+        text_from_json(payload.get("content")).or_else(|| text_from_json(payload.get("message")))
+    } else if is_event {
+        text_from_json(payload.get("message"))
+            .or_else(|| text_from_json(payload.get("text")))
+            .or_else(|| text_from_json(payload.get("text_elements")))
+    } else if payload_type == "summary" {
+        text_from_json(payload.get("summary"))
+    } else {
+        None
+    };
+
+    (text.unwrap_or_default(), count)
+}
+
+fn claude_preview_from_value(value: &serde_json::Value) -> (String, usize) {
+    let value_type = value.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+    let message = value.get("message");
+    let role = message
+        .and_then(|v| v.get("role"))
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let is_user = value_type == "user" || role == "user";
+    let count = usize::from(is_user);
+    let text = if is_user {
+        message.and_then(|v| text_from_json(v.get("content")))
+    } else {
+        None
+    };
+    (text.unwrap_or_default(), count)
+}
+
+fn text_from_json(value: Option<&serde_json::Value>) -> Option<String> {
+    let value = value?;
+    match value {
+        serde_json::Value::String(text) => clean_preview_text(text),
+        serde_json::Value::Array(items) => {
+            let text = items
+                .iter()
+                .filter_map(|item| {
+                    if let Some(text) = item.as_str() {
+                        return Some(text.to_string());
+                    }
+                    item.get("text")
+                        .and_then(|v| v.as_str())
+                        .or_else(|| item.get("content").and_then(|v| v.as_str()))
+                        .map(str::to_string)
+                })
+                .collect::<Vec<_>>()
+                .join(" ");
+            clean_preview_text(&text)
+        }
+        serde_json::Value::Object(map) => map
+            .get("text")
+            .and_then(|v| v.as_str())
+            .or_else(|| map.get("content").and_then(|v| v.as_str()))
+            .and_then(clean_preview_text),
+        _ => None,
+    }
+}
+
+fn clean_preview_text(text: &str) -> Option<String> {
+    let compact = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let trimmed = compact.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let mut preview = trimmed.chars().take(180).collect::<String>();
+    if trimmed.chars().count() > 180 {
+        preview.push('…');
+    }
+    Some(preview)
+}
+
+fn jsonl_files(root: &Path, limit: usize) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    collect_jsonl_files(root, &mut files, limit);
+    files.sort_by_key(|path| std::cmp::Reverse(file_modified_ms(path)));
+    files.truncate(limit);
+    files
+}
+
+fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>, limit: usize) {
+    if files.len() >= limit || !dir.exists() {
+        return;
+    }
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for entry in entries.flatten() {
+        if files.len() >= limit {
+            return;
+        }
+        let path = entry.path();
+        if path.is_dir() {
+            collect_jsonl_files(&path, files, limit);
+        } else if path.extension().and_then(|v| v.to_str()) == Some("jsonl") {
+            files.push(path);
+        }
+    }
+}
+
+fn file_modified_ms(path: &Path) -> u128 {
+    fs::metadata(path)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default()
+}
+
+fn session_title_from_path(path: &Path, id: &str) -> String {
+    path.file_stem()
+        .and_then(|value| value.to_str())
+        .map(|value| value.strip_prefix("rollout-").unwrap_or(value).to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| id.to_string())
+}
+
+fn launch_vscode_inner(request: LaunchRequest) -> Result<(), String> {
+    let env = client_gateway_env(&request.listen, &request.tool);
 
     // Try common VS Code locations on Windows
     #[cfg(windows)]
@@ -184,188 +668,307 @@ fn launch_vscode(request: LaunchRequest) -> Result<(), String> {
             ),
         ];
         for cmd in &candidates {
-            if Command::new(cmd)
-                .arg(&request.directory)
-                .env(key_name, "ferryllm")
-                .env(base_name, &base_url)
-                .spawn()
-                .is_ok()
-            {
+            let mut command = Command::new(cmd);
+            command.arg(&request.directory);
+            apply_client_env(&mut command, &env);
+            if command.spawn().is_ok() {
                 return Ok(());
             }
         }
-        Err("cannot find VS Code. Please ensure 'code' is in your PATH or VS Code is installed".into())
+        Err(
+            "cannot find VS Code. Please ensure 'code' is in your PATH or VS Code is installed"
+                .into(),
+        )
     }
 
     #[cfg(not(windows))]
     {
-        Command::new("code")
-            .arg(&request.directory)
-            .env(key_name, "ferryllm")
-            .env(base_name, &base_url)
+        let mut command = Command::new("code");
+        command.arg(&request.directory);
+        apply_client_env(&mut command, &env);
+        command
             .spawn()
             .map_err(|e| format!("failed to launch VS Code: {}", e))?;
         Ok(())
     }
 }
 
-fn format_base_url(listen: &str, provider_type: &str) -> String {
+fn client_gateway_env(listen: &str, tool: &str) -> Vec<(&'static str, String)> {
     let host = if listen.starts_with("0.0.0.0") {
         listen.replace("0.0.0.0", "127.0.0.1")
     } else {
         listen.to_string()
     };
-    match provider_type {
-        "anthropic" => format!("http://{}", host),
-        _ => format!("http://{}/v1", host),
+    match tool {
+        "claude" => vec![
+            ("ANTHROPIC_API_KEY", "ferryllm".into()),
+            ("ANTHROPIC_BASE_URL", format!("http://{}", host)),
+            ("ANTHROPIC_MODEL", "claude-sonnet-4-5".into()),
+            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-3-5-haiku-latest".into()),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-5".into()),
+            ("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-1".into()),
+        ],
+        _ => vec![
+            ("OPENAI_API_KEY", "ferryllm".into()),
+            ("OPENAI_BASE_URL", format!("http://{}/v1", host)),
+        ],
     }
 }
 
-fn env_var_names(provider_type: &str) -> (&'static str, &'static str) {
-    match provider_type {
-        "anthropic" => ("ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"),
-        "gemini" => ("GEMINI_API_KEY", "GEMINI_BASE_URL"),
-        _ => ("OPENAI_API_KEY", "OPENAI_BASE_URL"),
+fn apply_client_env(command: &mut Command, env: &[(&'static str, String)]) {
+    command.env_remove("ANTHROPIC_API_KEY");
+    command.env_remove("ANTHROPIC_AUTH_TOKEN");
+    command.env_remove("ANTHROPIC_BASE_URL");
+    command.env_remove("ANTHROPIC_MODEL");
+    command.env_remove("ANTHROPIC_DEFAULT_HAIKU_MODEL");
+    command.env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
+    command.env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
+    command.env_remove("CLAUDE_CODE_USE_BEDROCK");
+    command.env_remove("CLAUDE_CODE_USE_VERTEX");
+    command.env_remove("OPENAI_API_KEY");
+    command.env_remove("OPENAI_BASE_URL");
+    for (key, value) in env {
+        command.env(key, value);
     }
 }
 
 #[tauri::command]
-fn list_config_files() -> Result<Vec<ConfigFile>, String> {
-    let mut files = Vec::new();
-    let examples_dir = repo_root()?.join("examples").join("config");
-    if examples_dir.exists() {
-        for entry in fs::read_dir(&examples_dir).map_err(string_error)? {
-            let entry = entry.map_err(string_error)?;
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
-                files.push(ConfigFile {
-                    name: path
-                        .file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or("config.toml")
-                        .to_string(),
-                    path: path_to_string(&path),
-                });
+async fn list_config_files() -> Result<Vec<ConfigFile>, String> {
+    spawn_blocking_result(move || {
+        let mut files = Vec::new();
+        let examples_dir = repo_root()?.join("examples").join("config");
+        if examples_dir.exists() {
+            for entry in fs::read_dir(&examples_dir).map_err(string_error)? {
+                let entry = entry.map_err(string_error)?;
+                let path = entry.path();
+                if path.extension().and_then(|ext| ext.to_str()) == Some("toml") {
+                    files.push(ConfigFile {
+                        name: path
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("config.toml")
+                            .to_string(),
+                        path: path_to_string(&path),
+                    });
+                }
             }
         }
-    }
-    files.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(files)
+        files.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(files)
+    })
+    .await
 }
 
 #[tauri::command]
-fn discover_ferryllm(app: AppHandle) -> Result<String, String> {
+async fn discover_ferryllm(app: AppHandle) -> Result<String, String> {
+    spawn_blocking_result(move || discover_ferryllm_inner(app)).await
+}
+
+fn discover_ferryllm_inner(app: AppHandle) -> Result<String, String> {
     // 1. Check for bundled sidecar in resource directory
     let resource_dir = app.path().resource_dir().map_err(string_error)?;
-    let exe_name = if cfg!(windows) { "ferryllm-x86_64-pc-windows-msvc.exe" } else { "ferryllm-x86_64-unknown-linux-gnu" };
+    let exe_name = if cfg!(windows) {
+        "ferryllm-x86_64-pc-windows-msvc.exe"
+    } else {
+        "ferryllm-x86_64-unknown-linux-gnu"
+    };
     let bundled = resource_dir.join(exe_name);
     if bundled.exists() {
         return Ok(path_to_string(&bundled));
     }
 
-    // 2. Check system PATH
-    if let Some(path) = find_in_path("ferryllm") {
-        return Ok(path_to_string(&path));
-    }
-
-    // 3. Check local target/debug directory (dev mode)
-    let exe = if cfg!(windows) { "ferryllm.exe" } else { "ferryllm" };
+    // 2. Check local target/debug directory first in dev mode so the desktop
+    // shell does not accidentally launch an older ferryllm found on PATH.
+    let exe = if cfg!(windows) {
+        "ferryllm.exe"
+    } else {
+        "ferryllm"
+    };
     let local = repo_root()?.join("target").join("debug").join(exe);
     if local.exists() {
         return Ok(path_to_string(&local));
+    }
+
+    // 3. Check system PATH
+    if let Some(path) = find_in_path("ferryllm") {
+        return Ok(path_to_string(&path));
     }
 
     Ok("ferryllm".into())
 }
 
 #[tauri::command]
-fn read_config_file(path: String) -> Result<ConfigDocument, String> {
-    let raw = fs::read_to_string(&path).map_err(string_error)?;
-    let value: toml::Value = toml::from_str(&raw).map_err(string_error)?;
-    let config = serde_json::to_value(value).map_err(string_error)?;
-    Ok(ConfigDocument { path, raw, config })
+async fn read_config_file(path: String) -> Result<ConfigDocument, String> {
+    spawn_blocking_result(move || {
+        let raw = fs::read_to_string(&path).map_err(string_error)?;
+        let value: toml::Value = toml::from_str(&raw).map_err(string_error)?;
+        let config = serde_json::to_value(value).map_err(string_error)?;
+        Ok(ConfigDocument { path, raw, config })
+    })
+    .await
 }
 
 #[tauri::command]
-fn save_config_file(
+async fn save_config_file(
     app: AppHandle,
     state: State<'_, DesktopState>,
     request: SaveConfigRequest,
 ) -> Result<SaveResult, String> {
-    let toml = toml::to_string_pretty(&request.config).map_err(string_error)?;
-    fs::write(&request.path, toml).map_err(string_error)?;
-
     let executable = normalized_executable(request.executable.as_deref());
-    let validation = validate_with(&executable, &request.path);
-    let mut reloaded = false;
+    let runtime = Arc::clone(&state.runtime);
+    spawn_blocking_result(move || {
+        let path = normalized_config_path(&request.path)?;
+        let config = normalize_runtime_config(request.config);
+        let validation = validate_config_value_with(&executable, &path, &config)?;
 
-    if request.hot_reload && validation.ok && is_running(&state) {
-        restart_with(&app, &state, executable, request.path.clone())?;
-        reloaded = true;
-    }
+        let mut reloaded = false;
 
-    Ok(SaveResult {
-        path: request.path,
-        validation,
-        reloaded,
+        if validation.ok {
+            write_config_atomically(&path, &config)?;
+
+            if request.hot_reload && is_running(&runtime) {
+                restart_with(&app, &runtime, executable, path_to_string(&path))?;
+                reloaded = true;
+            }
+        }
+
+        Ok(SaveResult {
+            path: path_to_string(&path),
+            validation,
+            reloaded,
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn validate_config_file(executable: Option<String>, config_path: String) -> CommandResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        validate_with(&normalized_executable(executable.as_deref()), &config_path)
+    })
+    .await
+    .unwrap_or_else(|err| CommandResult {
+        ok: false,
+        code: None,
+        stdout: String::new(),
+        stderr: format!("failed to join validation task: {}", err),
     })
 }
 
 #[tauri::command]
-fn validate_config_file(executable: Option<String>, config_path: String) -> CommandResult {
-    validate_with(&normalized_executable(executable.as_deref()), &config_path)
+async fn validate_config_document(request: ValidateConfigRequest) -> CommandResult {
+    tauri::async_runtime::spawn_blocking(move || {
+        let executable = normalized_executable(request.executable.as_deref());
+        match default_config_toml_path()
+            .and_then(|path| validate_config_value_with(&executable, &path, &request.config))
+        {
+            Ok(result) => result,
+            Err(err) => CommandResult {
+                ok: false,
+                code: None,
+                stdout: String::new(),
+                stderr: err,
+            },
+        }
+    })
+    .await
+    .unwrap_or_else(|err| CommandResult {
+        ok: false,
+        code: None,
+        stdout: String::new(),
+        stderr: format!("failed to join validation task: {}", err),
+    })
 }
 
 #[tauri::command]
-fn start_server(
+async fn start_server(
     app: AppHandle,
     state: State<'_, DesktopState>,
     request: ServerRequest,
 ) -> Result<ProcessStatus, String> {
-    start_with(
-        &app,
-        &state,
-        normalized_executable(request.executable.as_deref()),
-        request.config_path,
-    )?;
-    status_inner(&state)
+    let runtime = Arc::clone(&state.runtime);
+    spawn_blocking_result(move || {
+        start_with(
+            &app,
+            &runtime,
+            normalized_executable(request.executable.as_deref()),
+            request.config_path,
+        )?;
+        status_inner(&runtime)
+    })
+    .await
 }
 
 #[tauri::command]
-fn stop_server(state: State<'_, DesktopState>) -> Result<ProcessStatus, String> {
-    stop_inner(&state)?;
-    status_inner(&state)
+async fn stop_server(state: State<'_, DesktopState>) -> Result<ProcessStatus, String> {
+    let runtime = Arc::clone(&state.runtime);
+    spawn_blocking_result(move || {
+        stop_inner(&runtime)?;
+        status_inner(&runtime)
+    })
+    .await
 }
 
 #[tauri::command]
-fn restart_server(
+async fn restart_server(
     app: AppHandle,
     state: State<'_, DesktopState>,
     request: ServerRequest,
 ) -> Result<ProcessStatus, String> {
-    restart_with(
-        &app,
-        &state,
-        normalized_executable(request.executable.as_deref()),
-        request.config_path,
-    )?;
-    status_inner(&state)
+    let runtime = Arc::clone(&state.runtime);
+    spawn_blocking_result(move || {
+        restart_with(
+            &app,
+            &runtime,
+            normalized_executable(request.executable.as_deref()),
+            request.config_path,
+        )?;
+        status_inner(&runtime)
+    })
+    .await
 }
 
 #[tauri::command]
-fn server_status(state: State<'_, DesktopState>) -> Result<ProcessStatus, String> {
-    status_inner(&state)
+async fn server_status(state: State<'_, DesktopState>) -> Result<ProcessStatus, String> {
+    let runtime = Arc::clone(&state.runtime);
+    spawn_blocking_result(move || status_inner(&runtime)).await
+}
+
+#[tauri::command]
+async fn fetch_server_snapshot(
+    state: State<'_, DesktopState>,
+    listen: String,
+) -> Result<ServerSnapshot, String> {
+    let runtime = Arc::clone(&state.runtime);
+    spawn_blocking_result(move || {
+        let status = status_inner(&runtime)?;
+        let base = dashboard_base_host(&listen);
+        Ok(ServerSnapshot {
+            status,
+            health: http_probe(&base, "/health"),
+            ready: http_probe(&base, "/readyz"),
+            metrics: http_probe(&base, "/metrics"),
+            models: http_probe(&base, "/v1/models"),
+            fetched_at_ms: unix_ms(),
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+async fn probe_provider(request: ProviderProbeRequest) -> Result<ProbeResult, String> {
+    spawn_blocking_result(move || probe_provider_inner(request)).await
 }
 
 fn start_with(
     app: &AppHandle,
-    state: &State<'_, DesktopState>,
+    runtime: &Arc<Mutex<RuntimeState>>,
     executable: String,
     config_path: String,
 ) -> Result<(), String> {
-    let mut runtime = state.runtime.lock().map_err(lock_error)?;
-    reap_if_exited(&mut runtime);
-    if runtime.child.is_some() {
+    let mut runtime_state = runtime.lock().map_err(lock_error)?;
+    reap_if_exited(&mut runtime_state);
+    if runtime_state.child.is_some() {
         return Err("ferryllm is already running".into());
     }
 
@@ -386,46 +989,46 @@ fn start_with(
     }
 
     push_log(
-        &mut runtime,
+        &mut runtime_state,
         "system",
         format!("started ferryllm with config {}", config_path),
     );
-    runtime.executable = executable;
-    runtime.config_path = config_path;
-    runtime.child = Some(child);
+    runtime_state.executable = executable;
+    runtime_state.config_path = config_path;
+    runtime_state.child = Some(child);
     Ok(())
 }
 
-fn stop_inner(state: &State<'_, DesktopState>) -> Result<(), String> {
-    let mut runtime = state.runtime.lock().map_err(lock_error)?;
-    if let Some(mut child) = runtime.child.take() {
+fn stop_inner(runtime: &Arc<Mutex<RuntimeState>>) -> Result<(), String> {
+    let mut runtime_state = runtime.lock().map_err(lock_error)?;
+    if let Some(mut child) = runtime_state.child.take() {
         let _ = child.kill();
-        let _ = child.wait();
-        push_log(&mut runtime, "system", "stopped ferryllm");
+        wait_for_exit(&mut child, Duration::from_secs(3))?;
+        push_log(&mut runtime_state, "system", "stopped ferryllm");
     }
     Ok(())
 }
 
 fn restart_with(
     app: &AppHandle,
-    state: &State<'_, DesktopState>,
+    runtime: &Arc<Mutex<RuntimeState>>,
     executable: String,
     config_path: String,
 ) -> Result<(), String> {
-    stop_inner(state)?;
-    start_with(app, state, executable, config_path)
+    stop_inner(runtime)?;
+    start_with(app, runtime, executable, config_path)
 }
 
-fn status_inner(state: &State<'_, DesktopState>) -> Result<ProcessStatus, String> {
-    let mut runtime = state.runtime.lock().map_err(lock_error)?;
-    reap_if_exited(&mut runtime);
-    let pid = runtime.child.as_ref().map(Child::id);
+fn status_inner(runtime: &Arc<Mutex<RuntimeState>>) -> Result<ProcessStatus, String> {
+    let mut runtime_state = runtime.lock().map_err(lock_error)?;
+    reap_if_exited(&mut runtime_state);
+    let pid = runtime_state.child.as_ref().map(Child::id);
     Ok(ProcessStatus {
-        running: runtime.child.is_some(),
-        executable: runtime.executable.clone(),
-        config_path: runtime.config_path.clone(),
+        running: runtime_state.child.is_some(),
+        executable: runtime_state.executable.clone(),
+        config_path: runtime_state.config_path.clone(),
         pid,
-        logs: runtime.logs.iter().cloned().collect(),
+        logs: runtime_state.logs.iter().cloned().collect(),
     })
 }
 
@@ -451,13 +1054,84 @@ fn validate_with(executable: &str, config_path: &str) -> CommandResult {
     }
 }
 
-fn is_running(state: &State<'_, DesktopState>) -> bool {
-    state
-        .runtime
+fn validate_config_value_with(
+    executable: &str,
+    target_path: &Path,
+    config: &serde_json::Value,
+) -> Result<CommandResult, String> {
+    let temp_path = temp_config_path(target_path);
+    write_config_atomically(&temp_path, config)?;
+    let result = validate_with(executable, &path_to_string(&temp_path));
+    let _ = fs::remove_file(&temp_path);
+    Ok(result)
+}
+
+fn normalize_runtime_config(mut config: serde_json::Value) -> serde_json::Value {
+    if let Some(providers) = config.get_mut("providers").and_then(|value| value.as_array_mut()) {
+        for provider in providers {
+            if let Some(base_url) = provider.get_mut("base_url").and_then(|value| value.as_str()) {
+                let trimmed = base_url.trim_end_matches('/').to_string();
+                if trimmed != base_url {
+                    if let Some(object) = provider.as_object_mut() {
+                        object.insert("base_url".into(), serde_json::Value::String(trimmed));
+                    }
+                }
+            }
+        }
+    }
+
+    let has_routes = config
+        .get("routes")
+        .and_then(|value| value.as_array())
+        .map(|routes| !routes.is_empty())
+        .unwrap_or(false);
+    if !has_routes {
+        let only_provider = config
+            .get("providers")
+            .and_then(|value| value.as_array())
+            .and_then(|providers| {
+                if providers.len() == 1 {
+                    let provider = &providers[0];
+                    let name = provider
+                        .get("name")
+                        .and_then(|value| value.as_str())
+                        .filter(|name| !name.trim().is_empty())
+                        .map(str::to_string)?;
+                    let base_url = provider
+                        .get("base_url")
+                        .and_then(|value| value.as_str())
+                        .unwrap_or_default()
+                        .to_string();
+                    Some((name, base_url))
+                } else {
+                    None
+                }
+            });
+        if let Some((provider_name, _base_url)) = only_provider {
+            if let Some(object) = config.as_object_mut() {
+                object.insert(
+                    "routes".into(),
+                    serde_json::json!([
+                        {
+                            "match": "*",
+                            "match_type": "prefix",
+                            "provider": provider_name,
+                        }
+                    ]),
+                );
+            }
+        }
+    }
+
+    config
+}
+
+fn is_running(runtime: &Arc<Mutex<RuntimeState>>) -> bool {
+    runtime
         .lock()
-        .map(|mut runtime| {
-            reap_if_exited(&mut runtime);
-            runtime.child.is_some()
+        .map(|mut runtime_state| {
+            reap_if_exited(&mut runtime_state);
+            runtime_state.child.is_some()
         })
         .unwrap_or(false)
 }
@@ -550,6 +1224,278 @@ fn path_to_string(path: &Path) -> String {
     path.to_string_lossy().to_string()
 }
 
+fn default_config_toml_path() -> Result<PathBuf, String> {
+    Ok(dirs::config_dir()
+        .ok_or("cannot find config directory")?
+        .join("ferryllm")
+        .join("config.toml"))
+}
+
+fn normalized_config_path(path: &str) -> Result<PathBuf, String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        default_config_toml_path()
+    } else {
+        Ok(PathBuf::from(trimmed))
+    }
+}
+
+fn temp_config_path(target_path: &Path) -> PathBuf {
+    let mut temp_path = target_path.to_path_buf();
+    let file_name = target_path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    temp_path.set_file_name(format!("{file_name}.{}.tmp", unix_ms()));
+    temp_path
+}
+
+fn write_config_atomically(path: &Path, config: &serde_json::Value) -> Result<(), String> {
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(string_error)?;
+    }
+
+    let temp_path = temp_config_path(path);
+    let toml = toml::to_string_pretty(config).map_err(string_error)?;
+    fs::write(&temp_path, toml).map_err(string_error)?;
+
+    if path.exists() {
+        let backup_path = backup_config_path(path);
+        if backup_path.exists() {
+            fs::remove_file(&backup_path).map_err(string_error)?;
+        }
+        fs::rename(path, &backup_path).map_err(string_error)?;
+        if let Err(err) = fs::rename(&temp_path, path) {
+            let _ = fs::rename(&backup_path, path);
+            let _ = fs::remove_file(&temp_path);
+            return Err(err.to_string());
+        }
+        let _ = fs::remove_file(&backup_path);
+    } else if let Err(err) = fs::rename(&temp_path, path) {
+        let _ = fs::remove_file(&temp_path);
+        return Err(err.to_string());
+    }
+
+    Ok(())
+}
+
+fn backup_config_path(path: &Path) -> PathBuf {
+    let mut backup_path = path.to_path_buf();
+    let file_name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("config.toml");
+    backup_path.set_file_name(format!("{file_name}.bak"));
+    backup_path
+}
+
+fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
+    let started_at = Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => return Ok(()),
+            Ok(None) if started_at.elapsed() >= timeout => {
+                return Err(format!(
+                    "process did not exit within {}ms after kill",
+                    timeout.as_millis()
+                ));
+            }
+            Ok(None) => thread::sleep(Duration::from_millis(50)),
+            Err(err) => return Err(err.to_string()),
+        }
+    }
+}
+
+fn dashboard_base_host(listen: &str) -> String {
+    let listen = listen.trim();
+    if listen.is_empty() {
+        return "127.0.0.1:3000".into();
+    }
+    if listen.starts_with("0.0.0.0") {
+        listen.replacen("0.0.0.0", "127.0.0.1", 1)
+    } else {
+        listen.to_string()
+    }
+}
+
+fn http_probe(base: &str, path: &str) -> ProbeResult {
+    match http_get_local(base, path) {
+        Ok((status, body)) => ProbeResult {
+            ok: (200..300).contains(&status),
+            status: Some(status),
+            body,
+            error: None,
+        },
+        Err(error) => ProbeResult {
+            ok: false,
+            status: None,
+            body: String::new(),
+            error: Some(error),
+        },
+    }
+}
+
+fn probe_provider_inner(request: ProviderProbeRequest) -> Result<ProbeResult, String> {
+    let key = resolve_probe_api_key(&request);
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(string_error)?;
+    let paths: Vec<&str> = if request.mode == "usage" {
+        vec![
+            "/dashboard/billing/credit_grants",
+            "/v1/dashboard/billing/credit_grants",
+            "/api/user/self",
+            "/api/token/self",
+        ]
+    } else if request.provider_type == "anthropic" {
+        vec!["/v1/models", "/"]
+    } else {
+        vec!["/v1/models", "/models", "/"]
+    };
+
+    let mut last_error = None::<String>;
+    for path in paths {
+        let url = format!("{}{}", trim_url(&request.base_url), path);
+        let mut req = client.get(&url);
+        if let Some(key) = &key {
+            if request.provider_type == "anthropic" {
+                req = req
+                    .header("x-api-key", key)
+                    .header("anthropic-version", "2023-06-01");
+            } else {
+                req = req.header("Authorization", format!("Bearer {key}"));
+            }
+        }
+        match req.send() {
+            Ok(resp) => {
+                let status = resp.status();
+                let body = resp.text().unwrap_or_default();
+                if status.is_success() {
+                    return Ok(ProbeResult {
+                        ok: true,
+                        status: Some(status.as_u16()),
+                        body: summarize_probe_body(&body),
+                        error: None,
+                    });
+                }
+                last_error = Some(format!("{} returned {}", url, status));
+                if request.mode != "usage" && status.as_u16() == 401 {
+                    break;
+                }
+            }
+            Err(err) => {
+                last_error = Some(format!("{}: {}", url, err));
+            }
+        }
+    }
+
+    Ok(ProbeResult {
+        ok: false,
+        status: None,
+        body: String::new(),
+        error: Some(
+            last_error.unwrap_or_else(|| format!("provider '{}' probe failed", request.name)),
+        ),
+    })
+}
+
+fn resolve_probe_api_key(request: &ProviderProbeRequest) -> Option<String> {
+    if let Some(key) = request
+        .api_key
+        .as_ref()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|key| !key.is_empty())
+    {
+        return Some(key.to_string());
+    }
+    if let Some(env_name) = request
+        .api_key_env
+        .as_ref()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(key) = env::var(env_name) {
+            return Some(key);
+        }
+    }
+    if let Some(file) = request
+        .api_key_file
+        .as_ref()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(key) = fs::read_to_string(file) {
+            let key = key.trim();
+            if !key.is_empty() {
+                return Some(key.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn trim_url(value: &str) -> String {
+    value.trim().trim_end_matches('/').to_string()
+}
+
+fn summarize_probe_body(body: &str) -> String {
+    let trimmed = body.trim();
+    if trimmed.len() <= 800 {
+        trimmed.to_string()
+    } else {
+        format!("{}...", &trimmed[..800])
+    }
+}
+
+fn http_get_local(base: &str, path: &str) -> Result<(u16, String), String> {
+    let (host, port) = parse_host_port(base)?;
+    let mut stream = TcpStream::connect((host.as_str(), port)).map_err(string_error)?;
+    let timeout = Some(Duration::from_millis(1200));
+    stream.set_read_timeout(timeout).map_err(string_error)?;
+    stream.set_write_timeout(timeout).map_err(string_error)?;
+
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: {host}:{port}\r\nConnection: close\r\nAccept: */*\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes()).map_err(string_error)?;
+
+    let mut response = String::new();
+    stream.read_to_string(&mut response).map_err(string_error)?;
+    let (head, body) = response
+        .split_once("\r\n\r\n")
+        .ok_or_else(|| "invalid HTTP response".to_string())?;
+    let status = head
+        .lines()
+        .next()
+        .and_then(|line| line.split_whitespace().nth(1))
+        .and_then(|status| status.parse::<u16>().ok())
+        .ok_or_else(|| "missing HTTP status".to_string())?;
+    Ok((status, body.to_string()))
+}
+
+fn parse_host_port(base: &str) -> Result<(String, u16), String> {
+    let without_scheme = base
+        .strip_prefix("http://")
+        .or_else(|| base.strip_prefix("https://"))
+        .unwrap_or(base);
+    let host_port = without_scheme.split('/').next().unwrap_or(without_scheme);
+    let (host, port) = host_port
+        .rsplit_once(':')
+        .ok_or_else(|| format!("listen address '{base}' must include a port"))?;
+    let port = port
+        .parse::<u16>()
+        .map_err(|_| format!("invalid listen port in '{base}'"))?;
+    let host = host.trim_matches(['[', ']']).to_string();
+    if host.is_empty() {
+        return Err(format!("invalid listen host in '{base}'"));
+    }
+    Ok((host, port))
+}
+
 fn unix_ms() -> u128 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -565,13 +1511,24 @@ fn string_error(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
+async fn spawn_blocking_result<T>(
+    task: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String>
+where
+    T: Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(task)
+        .await
+        .map_err(|err| format!("failed to join background task: {}", err))?
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(DesktopState {
-            runtime: Mutex::new(RuntimeState::default()),
+            runtime: Arc::new(Mutex::new(RuntimeState::default())),
         })
         .invoke_handler(tauri::generate_handler![
             list_config_files,
@@ -579,10 +1536,19 @@ pub fn run() {
             read_config_file,
             save_config_file,
             validate_config_file,
+            validate_config_document,
             start_server,
             stop_server,
             restart_server,
             server_status,
+            fetch_server_snapshot,
+            probe_provider,
+            scan_ai_sessions,
+            resume_ai_session,
+            create_workspace,
+            delete_workspace,
+            delete_ai_session,
+            reveal_workspace,
             launch_cli,
             launch_vscode,
             write_config_to_default,
