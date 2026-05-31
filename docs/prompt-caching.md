@@ -133,7 +133,7 @@ hashes:
 
 ```text
 provider=openai
-request_shape="model=gpt-5.5,stream=true,include_usage=true,messages=42,tools=12,..."
+request_shape="model=gpt-5.4,stream=true,include_usage=true,messages=42,tools=12,..."
 ```
 
 The shape log includes:

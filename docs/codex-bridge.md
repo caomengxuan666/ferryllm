@@ -47,7 +47,7 @@ api_base = "http://127.0.0.1:3000"
 codex
 ```
 
-Codex will send Requests API requests to ferryllm, which translates them to Claude.
+Codex will send Responses API requests to ferryllm, which translates them to Claude.
 
 ## How It Works
 

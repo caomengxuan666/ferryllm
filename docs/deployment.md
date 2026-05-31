@@ -2,7 +2,7 @@
 
 This document describes the recommended deployment model for ferryllm as a standalone LLM middleware server.
 
-The current repository provides example servers. A production release should expose a dedicated binary such as:
+The repository provides a config-driven `ferryllm` binary:
 
 ```bash
 ferryllm serve --config /etc/ferryllm/config.toml
@@ -10,11 +10,11 @@ ferryllm serve --config /etc/ferryllm/config.toml
 
 ## Local Development
 
-For local testing with the current example server:
+For local testing with the example Codex APIs config:
 
 ```bash
 export CODX_API_KEY="your-api-key"
-RUST_LOG=info cargo run --example codexapis_server --features http
+RUST_LOG=info cargo run --features http --bin ferryllm -- serve --config examples/config/codexapis.toml
 ```
 
 Health check:
@@ -155,7 +155,7 @@ Recommended Kubernetes endpoints:
 
 - Liveness probe: `/healthz`
 - Readiness probe: `/readyz`
-- Metrics endpoint: `/metrics` once implemented
+- Metrics endpoint: `/metrics`
 
 Example probe shape:
 
