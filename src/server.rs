@@ -21,7 +21,7 @@ use crate::adapter::{AdapterError, Protocol};
 use crate::entry::openai_responses;
 use crate::entry::{anthropic, openai};
 use crate::ir::{self, ContentBlock, ReasoningControl};
-use crate::router::{ResolvedFallback, Router as ModelRouter};
+use crate::router::{ResolvedFallback, ResolvedRoute, Router as ModelRouter};
 use crate::token_observability;
 use crate::token_observability::DEBUG_REQUEST_SHAPE_FLAG;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -813,6 +813,72 @@ struct ModelAndStream {
     stream: bool,
 }
 
+fn resolve_route(
+    state: &Arc<AppState>,
+    headers: &HeaderMap,
+    model: &str,
+) -> Result<ResolvedRoute, AdapterError> {
+    let resolved = state.router.resolve(model)?;
+    if resolved.model_rewritten {
+        return Ok(resolved);
+    }
+    let Some(provider) = client_provider_hint(headers) else {
+        return Ok(resolved);
+    };
+    match state.router.resolve_for_provider(&provider, model) {
+        Ok(route) => Ok(route),
+        Err(err) => {
+            trace!(
+                provider = %provider,
+                model = %model,
+                error = %err,
+                "client provider hint could not be applied; using normal route"
+            );
+            Ok(resolved)
+        }
+    }
+}
+
+fn client_provider_hint(headers: &HeaderMap) -> Option<String> {
+    const PREFIX: &str = "ferryllm-provider:";
+    raw_client_api_key(headers)
+        .and_then(|key| key.strip_prefix(PREFIX))
+        .and_then(hex_decode_utf8)
+}
+
+fn raw_client_api_key(headers: &HeaderMap) -> Option<&str> {
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let x_api_key = headers
+        .get("x-api-key")
+        .and_then(|value| value.to_str().ok());
+    bearer.into_iter().chain(x_api_key).next()
+}
+
+fn hex_decode_utf8(raw: &str) -> Option<String> {
+    if raw.len() % 2 != 0 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(raw.len() / 2);
+    for pair in raw.as_bytes().chunks_exact(2) {
+        let hi = hex_value(pair[0])?;
+        let lo = hex_value(pair[1])?;
+        bytes.push((hi << 4) | lo);
+    }
+    String::from_utf8(bytes).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 /// Attempt a raw passthrough if the entry protocol matches the backend protocol
 /// and no model rewrite is needed. Returns `Ok(Some(response))` on success,
 /// `Ok(None)` if passthrough is not applicable (caller should use the normal
@@ -828,10 +894,7 @@ async fn try_passthrough(
     let meta: ModelAndStream =
         serde_json::from_slice(body).map_err(|e| AppError::bad_request(e.to_string()))?;
 
-    let route = state
-        .router
-        .resolve(&meta.model)
-        .map_err(AppError::from_adapter)?;
+    let route = resolve_route(state, headers, &meta.model).map_err(AppError::from_adapter)?;
 
     // Passthrough only when: same protocol, no model rewrite, no fallbacks.
     if route.adapter.protocol() != entry_protocol
@@ -849,19 +912,31 @@ async fn try_passthrough(
         stream = meta.stream,
         "using raw passthrough"
     );
-    state
-        .metrics
-        .inc_labeled_request(&route.provider, &meta.model);
-
     let user_agent = headers
         .get(header::USER_AGENT)
         .and_then(|value| value.to_str().ok());
-    let raw = if meta.stream {
+    let raw_result = if meta.stream {
         route.adapter.chat_stream_raw(body, user_agent).await
     } else {
         route.adapter.chat_raw(body, user_agent).await
-    }
-    .map_err(AppError::from_adapter)?;
+    };
+    let raw = match raw_result {
+        Ok(raw) => raw,
+        Err(AdapterError::UnsupportedFeature { provider, feature }) => {
+            trace!(
+                request_id = %request_id,
+                provider = %provider,
+                feature = %feature,
+                "raw passthrough unsupported; falling back to translated request path"
+            );
+            return Ok(None);
+        }
+        Err(err) => return Err(AppError::from_adapter(err)),
+    };
+
+    state
+        .metrics
+        .inc_labeled_request(&route.provider, &meta.model);
 
     Ok(Some(raw.into_axum()))
 }
@@ -896,10 +971,7 @@ async fn openai_chat_handler(
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
     info!(request_id = %request_id, entry = "openai", model = %ir_req.model, stream, "incoming request");
-    let route = state
-        .router
-        .resolve(&ir_req.model)
-        .map_err(AppError::from_adapter)?;
+    let route = resolve_route(&state, &headers, &ir_req.model).map_err(AppError::from_adapter)?;
 
     // Apply model rewrite so the backend sees the correct model name.
     let display_model = ir_req.model.clone();
@@ -1087,10 +1159,7 @@ async fn responses_handler(
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
     info!(request_id = %request_id, entry = "responses", model = %ir_req.model, stream, "incoming request");
-    let route = state
-        .router
-        .resolve(&ir_req.model)
-        .map_err(AppError::from_adapter)?;
+    let route = resolve_route(&state, &headers, &ir_req.model).map_err(AppError::from_adapter)?;
 
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
@@ -1253,7 +1322,9 @@ async fn handle_responses_stream(
                             if let Ok(item) = serde_json::from_str::<serde_json::Value>(data) {
                                 if item["item"]["type"].as_str() == Some("function_call") {
                                     if let (Some(id), Some(name), Some(args)) = (
-                                        item["item"]["id"].as_str(),
+                                        item["item"]["call_id"]
+                                            .as_str()
+                                            .or_else(|| item["item"]["id"].as_str()),
                                         item["item"]["name"].as_str(),
                                         item["item"]["arguments"].as_str(),
                                     ) {
@@ -1353,10 +1424,7 @@ async fn anthropic_messages_handler(
     apply_anthropic_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
     info!(request_id = %request_id, entry = "anthropic", model = %ir_req.model, stream, "incoming request");
-    let route = state
-        .router
-        .resolve(&ir_req.model)
-        .map_err(AppError::from_adapter)?;
+    let route = resolve_route(&state, &headers, &ir_req.model).map_err(AppError::from_adapter)?;
 
     // Apply model rewrite.
     let display_model = ir_req.model.clone();
@@ -2337,6 +2405,8 @@ mod tests {
         failures_before_success: AtomicU64,
     }
 
+    struct RawUnsupportedResponsesAdapter;
+
     #[async_trait]
     impl crate::adapter::Adapter for TestAdapter {
         fn provider_name(&self) -> &str {
@@ -2437,6 +2507,67 @@ mod tests {
         > {
             Ok(Box::pin(stream::empty()))
         }
+    }
+
+    #[async_trait]
+    impl crate::adapter::Adapter for RawUnsupportedResponsesAdapter {
+        fn provider_name(&self) -> &str {
+            "raw-unsupported"
+        }
+
+        fn supports_model(&self, _model: &str) -> bool {
+            true
+        }
+
+        fn protocol(&self) -> crate::adapter::Protocol {
+            crate::adapter::Protocol::OpenAIResponses
+        }
+
+        async fn chat(&self, request: &ir::ChatRequest) -> Result<ir::ChatResponse, AdapterError> {
+            Ok(ir::ChatResponse {
+                id: "resp_1".into(),
+                model: request.model.clone(),
+                choices: Vec::new(),
+                usage: ir::Usage::default(),
+            })
+        }
+
+        async fn chat_stream(
+            &self,
+            _request: &ir::ChatRequest,
+        ) -> Result<
+            std::pin::Pin<
+                Box<dyn futures::Stream<Item = Result<ir::StreamEvent, AdapterError>> + Send>,
+            >,
+            AdapterError,
+        > {
+            Ok(Box::pin(stream::empty()))
+        }
+    }
+
+    #[tokio::test]
+    async fn passthrough_unsupported_feature_falls_back_to_translated_path() {
+        let mut router = ModelRouter::new();
+        router.register_adapter_as("responses", Arc::new(RawUnsupportedResponsesAdapter));
+        let state = Arc::new(AppState::new(
+            router,
+            ServerOptions::default(),
+            Metrics::default(),
+        ));
+        let body = Bytes::from_static(br#"{"model":"gpt-5.4","stream":true}"#);
+
+        let response = try_passthrough(
+            &state,
+            &body,
+            &HeaderMap::new(),
+            Protocol::OpenAIResponses,
+            "req_1",
+        )
+        .await
+        .expect("passthrough decision");
+
+        assert!(response.is_none());
+        assert!(!state.metrics.render().contains("ferryllm_labeled_requests"));
     }
 
     #[tokio::test]

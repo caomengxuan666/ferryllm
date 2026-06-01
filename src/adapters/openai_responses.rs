@@ -49,9 +49,25 @@ struct ResponsesReasoning {
 }
 
 #[derive(Debug, Serialize)]
-struct ResponsesInputItem {
-    role: String,
-    content: Vec<ResponsesContentPart>,
+#[serde(untagged)]
+enum ResponsesInputItem {
+    Message {
+        role: String,
+        content: Vec<ResponsesContentPart>,
+    },
+    FunctionCall {
+        #[serde(rename = "type")]
+        ty: &'static str,
+        call_id: String,
+        name: String,
+        arguments: String,
+    },
+    FunctionCallOutput {
+        #[serde(rename = "type")]
+        ty: &'static str,
+        call_id: String,
+        output: String,
+    },
 }
 
 #[derive(Debug, Serialize)]
@@ -90,6 +106,8 @@ struct ResponsesOutputItem {
     ty: String,
     #[serde(default)]
     id: Option<String>,
+    #[serde(default)]
+    call_id: Option<String>,
     #[serde(default)]
     name: Option<String>,
     #[serde(default)]
@@ -221,6 +239,7 @@ fn ir_message_to_responses_items(msg: &Message) -> Vec<ResponsesInputItem> {
     .to_string();
 
     let mut text_parts = Vec::new();
+    let mut items = Vec::new();
     for block in &msg.content {
         match block {
             ContentBlock::Text { text, .. } | ContentBlock::Thinking { thinking: text, .. } => {
@@ -235,39 +254,68 @@ fn ir_message_to_responses_items(msg: &Message) -> Vec<ResponsesInputItem> {
             },
             ContentBlock::ToolUse {
                 id, name, input, ..
-            } => text_parts.push(format!(
-                "[tool_use id={id} name={name} input={}]",
-                serde_json::to_string(input).unwrap_or_default()
-            )),
-            ContentBlock::ToolResult {
-                id,
-                content,
-                is_error,
-                ..
-            } => text_parts.push(format!(
-                "[tool_result id={id} is_error={is_error}] {content}"
-            )),
+            } => {
+                push_responses_message_item(&mut items, &role, &mut text_parts, msg.role.clone());
+                items.push(ResponsesInputItem::FunctionCall {
+                    ty: "function_call",
+                    call_id: id.clone(),
+                    name: name.clone(),
+                    arguments: canonical_json_string(input),
+                });
+            }
+            ContentBlock::ToolResult { id, content, .. } => {
+                push_responses_message_item(&mut items, &role, &mut text_parts, msg.role.clone());
+                items.push(ResponsesInputItem::FunctionCallOutput {
+                    ty: "function_call_output",
+                    call_id: id.clone(),
+                    output: content.clone(),
+                });
+            }
             ContentBlock::RedactedThinking => {}
         }
     }
 
-    if text_parts.is_empty() {
-        text_parts.push(String::new());
-    }
-
-    vec![ResponsesInputItem {
-        role,
-        content: text_parts
-            .into_iter()
-            .map(|text| {
-                if msg.role == Role::Assistant {
-                    ResponsesContentPart::OutputText { text }
-                } else {
-                    ResponsesContentPart::InputText { text }
+    push_responses_message_item(&mut items, &role, &mut text_parts, msg.role.clone());
+    if items.is_empty() {
+        items.push(ResponsesInputItem::Message {
+            role,
+            content: vec![if msg.role == Role::Assistant {
+                ResponsesContentPart::OutputText {
+                    text: String::new(),
                 }
-            })
-            .collect(),
-    }]
+            } else {
+                ResponsesContentPart::InputText {
+                    text: String::new(),
+                }
+            }],
+        });
+    }
+    items
+}
+
+fn push_responses_message_item(
+    items: &mut Vec<ResponsesInputItem>,
+    role: &str,
+    text_parts: &mut Vec<String>,
+    source_role: Role,
+) {
+    if text_parts.is_empty() {
+        return;
+    }
+    let content = std::mem::take(text_parts)
+        .into_iter()
+        .map(|text| {
+            if source_role == Role::Assistant {
+                ResponsesContentPart::OutputText { text }
+            } else {
+                ResponsesContentPart::InputText { text }
+            }
+        })
+        .collect();
+    items.push(ResponsesInputItem::Message {
+        role: role.to_string(),
+        content,
+    });
 }
 
 fn responses_response_to_ir(resp: ResponsesResponse) -> ChatResponse {
@@ -309,8 +357,9 @@ fn responses_output_to_blocks(output: Vec<ResponsesOutputItem>) -> Vec<ContentBl
             "function_call" => {
                 let args = item.arguments.unwrap_or_else(|| "{}".into());
                 let input = serde_json::from_str(&args).unwrap_or(Value::Null);
+                let id = item.call_id.or(item.id).unwrap_or_default();
                 blocks.push(ContentBlock::ToolUse {
-                    id: item.id.unwrap_or_default(),
+                    id,
                     name: item.name.unwrap_or_default(),
                     input: canonical_json(&input),
                     cache_control: None,
@@ -397,34 +446,56 @@ fn summarize_responses_request_shape(req: &ResponsesRequest) -> String {
 }
 
 fn summarize_responses_input_item(index: usize, item: &ResponsesInputItem) -> String {
-    let mut parts = Vec::with_capacity(item.content.len());
-    for part in &item.content {
-        let text = match part {
-            ResponsesContentPart::InputText { text }
-            | ResponsesContentPart::OutputText { text } => text,
-        };
-        if item.role == "system" {
-            parts.push(format!(
-                "text({};windows={})",
-                summarize_text(text),
-                summarize_text_windows_detailed(
-                    text,
-                    REQUEST_SHAPE_SYSTEM_WINDOW_BYTES,
-                    REQUEST_SHAPE_SYSTEM_WINDOW_MAX,
-                    64,
-                    8,
-                )
-            ));
-        } else {
-            parts.push(format!("text({})", summarize_text(text)));
+    match item {
+        ResponsesInputItem::Message { role, content } => {
+            let mut parts = Vec::with_capacity(content.len());
+            for part in content {
+                let text = match part {
+                    ResponsesContentPart::InputText { text }
+                    | ResponsesContentPart::OutputText { text } => text,
+                };
+                if role == "system" {
+                    parts.push(format!(
+                        "text({};windows={})",
+                        summarize_text(text),
+                        summarize_text_windows_detailed(
+                            text,
+                            REQUEST_SHAPE_SYSTEM_WINDOW_BYTES,
+                            REQUEST_SHAPE_SYSTEM_WINDOW_MAX,
+                            64,
+                            8,
+                        )
+                    ));
+                } else {
+                    parts.push(format!("text({})", summarize_text(text)));
+                }
+            }
+            format!(
+                "#{index}:role={},content=parts({},[{}])",
+                role,
+                content.len(),
+                parts.join("|")
+            )
         }
+        ResponsesInputItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+            ..
+        } => format!(
+            "#{index}:function_call(id={},name={},arguments={})",
+            summarize_text(call_id),
+            name,
+            summarize_text(arguments)
+        ),
+        ResponsesInputItem::FunctionCallOutput {
+            call_id, output, ..
+        } => format!(
+            "#{index}:function_call_output(id={},output={})",
+            summarize_text(call_id),
+            summarize_text(output)
+        ),
     }
-    format!(
-        "#{index}:role={},content=parts({},[{}])",
-        item.role,
-        item.content.len(),
-        parts.join("|")
-    )
 }
 
 #[async_trait]
@@ -658,18 +729,24 @@ fn handle_responses_sse_event(
             if let Some(item) = event.item {
                 if item.ty == "function_call" {
                     let args = item.arguments.unwrap_or_else(|| "{}".into());
-                    let input = serde_json::from_str(&args).unwrap_or(Value::Null);
+                    let id = item.call_id.or(item.id).unwrap_or_default();
                     let index = *tool_index;
                     *tool_index += 1;
                     let _ = tx.send(Ok(StreamEvent::ContentBlockStart {
                         index,
                         content_block: ContentBlock::ToolUse {
-                            id: item.id.unwrap_or_default(),
+                            id,
                             name: item.name.unwrap_or_default(),
-                            input: canonical_json(&input),
+                            input: Value::Object(Default::default()),
                             cache_control: None,
                         },
                     }));
+                    if !args.is_empty() {
+                        let _ = tx.send(Ok(StreamEvent::ContentBlockDelta {
+                            index,
+                            delta: ContentDelta::InputJSONDelta { partial_json: args },
+                        }));
+                    }
                     let _ = tx.send(Ok(StreamEvent::ContentBlockStop { index }));
                 }
             }
@@ -732,6 +809,136 @@ mod tests {
         assert_eq!(value["input"][0]["content"][0]["type"], "input_text");
         assert_eq!(value["tools"][0]["type"], "function");
         assert!(summarize_responses_request_shape(&native).contains("reasoning=effort=high"));
+    }
+
+    #[test]
+    fn responses_request_keeps_tool_history_structured() {
+        let mut req = sample_request();
+        req.messages = vec![
+            Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: "call_search".into(),
+                    name: "Search".into(),
+                    input: serde_json::json!({"query":"ferryllm"}),
+                    cache_control: None,
+                }],
+            },
+            Message {
+                role: Role::Tool,
+                content: vec![ContentBlock::ToolResult {
+                    id: "call_search".into(),
+                    content: "found ferryllm".into(),
+                    is_error: false,
+                    cache_control: None,
+                }],
+            },
+        ];
+
+        let native = ir_to_responses_request(&req);
+        let value = serde_json::to_value(&native).expect("serialize responses request");
+
+        assert_eq!(value["input"][0]["type"], "function_call");
+        assert_eq!(value["input"][0]["call_id"], "call_search");
+        assert_eq!(value["input"][0]["name"], "Search");
+        assert_eq!(
+            value["input"][0]["arguments"],
+            serde_json::json!("{\"query\":\"ferryllm\"}")
+        );
+        assert_eq!(value["input"][1]["type"], "function_call_output");
+        assert_eq!(value["input"][1]["call_id"], "call_search");
+        assert_eq!(value["input"][1]["output"], "found ferryllm");
+    }
+
+    #[test]
+    fn responses_output_prefers_call_id_for_tool_use() {
+        let blocks = responses_output_to_blocks(vec![ResponsesOutputItem {
+            ty: "function_call".into(),
+            id: Some("item_123".into()),
+            call_id: Some("call_123".into()),
+            name: Some("Search".into()),
+            arguments: Some(r#"{"query":"ferryllm"}"#.into()),
+            content: Vec::new(),
+        }]);
+
+        match &blocks[0] {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                assert_eq!(id, "call_123");
+                assert_eq!(name, "Search");
+                assert_eq!(input["query"], "ferryllm");
+            }
+            other => panic!("expected ToolUse block, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn streaming_function_call_emits_arguments_delta() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut text_started = false;
+        let mut tool_index = 1;
+        let mut seen_usage = None;
+
+        handle_responses_sse_event(
+            ResponsesSseEvent {
+                ty: "response.output_item.done".into(),
+                response: None,
+                item: Some(ResponsesOutputItem {
+                    ty: "function_call".into(),
+                    id: Some("item_123".into()),
+                    call_id: Some("call_123".into()),
+                    name: Some("Search".into()),
+                    arguments: Some(r#"{"query":"ferryllm"}"#.into()),
+                    content: Vec::new(),
+                }),
+                delta: None,
+            },
+            &tx,
+            &mut text_started,
+            &mut tool_index,
+            &mut seen_usage,
+        );
+
+        let first = rx
+            .try_recv()
+            .expect("content block start")
+            .expect("stream event");
+        let second = rx
+            .try_recv()
+            .expect("content block delta")
+            .expect("stream event");
+        let third = rx
+            .try_recv()
+            .expect("content block stop")
+            .expect("stream event");
+
+        match first {
+            StreamEvent::ContentBlockStart {
+                index,
+                content_block:
+                    ContentBlock::ToolUse {
+                        id, name, input, ..
+                    },
+            } => {
+                assert_eq!(index, 1);
+                assert_eq!(id, "call_123");
+                assert_eq!(name, "Search");
+                assert_eq!(input, serde_json::json!({}));
+            }
+            other => panic!("expected tool start, got {other:?}"),
+        }
+        match second {
+            StreamEvent::ContentBlockDelta {
+                index,
+                delta: ContentDelta::InputJSONDelta { partial_json },
+            } => {
+                assert_eq!(index, 1);
+                assert_eq!(partial_json, r#"{"query":"ferryllm"}"#);
+            }
+            other => panic!("expected input json delta, got {other:?}"),
+        }
+        assert!(matches!(third, StreamEvent::ContentBlockStop { index: 1 }));
     }
 
     #[test]

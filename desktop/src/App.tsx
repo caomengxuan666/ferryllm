@@ -1636,9 +1636,9 @@ function App() {
     try {
       if (!(await ensureGatewayRunning())) return;
       if (target === "vscode") {
-        await invoke("launch_vscode", { request: { directory: workspace.path, listen, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
+        await invoke("launch_vscode", { request: { directory: workspace.path, listen, provider_name: provider.name, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       } else {
-        await invoke("launch_cli", { request: { directory: workspace.path, listen, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
+        await invoke("launch_cli", { request: { directory: workspace.path, listen, provider_name: provider.name, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       }
       recordLaunch(workspace.path, tool, target, provider, reasoningEffort);
       addToast(`${target === "vscode" ? "VS Code" : `${tool} CLI`} launched`, "success");
@@ -1659,7 +1659,7 @@ function App() {
     try {
       if (!(await ensureGatewayRunning())) return;
       await invoke("resume_ai_session", {
-        request: { id: session.id, cwd: session.cwd, listen, provider_type: provider.type, tool: session.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort },
+        request: { id: session.id, cwd: session.cwd, listen, provider_name: provider.name, provider_type: provider.type, tool: session.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort },
       });
       recordLaunch(session.cwd, session.tool, "cli", provider, reasoningEffort);
       addToast(`${session.tool} session resumed`, "success");
@@ -1683,9 +1683,9 @@ function App() {
     try {
       if (!(await ensureGatewayRunning())) return;
       if (item.launchType === "vscode") {
-        await invoke("launch_vscode", { request: { directory: item.directory, listen, provider_type: provider.type, tool: item.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
+        await invoke("launch_vscode", { request: { directory: item.directory, listen, provider_name: provider.name, provider_type: provider.type, tool: item.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       } else {
-        await invoke("launch_cli", { request: { directory: item.directory, listen, provider_type: provider.type, tool: item.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
+        await invoke("launch_cli", { request: { directory: item.directory, listen, provider_name: provider.name, provider_type: provider.type, tool: item.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       }
       setRecentLaunches((prev) => {
         const next = prev.map((r) => r.id === item.id ? { ...r, lastUsed: Date.now() } : r).sort((a, b) => b.lastUsed - a.lastUsed);

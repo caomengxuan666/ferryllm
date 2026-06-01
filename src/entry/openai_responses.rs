@@ -40,8 +40,9 @@ pub struct ResponsesReasoning {
 
 /// An input item in the Responses API.
 ///
-/// The Responses API supports two kinds of input items:
+/// The Responses API supports three kinds of input items:
 /// - Role-based items with `role` and `content` (user, assistant, system messages)
+/// - `function_call` items with `call_id`, `name`, and `arguments` (tool calls)
 /// - `function_call_output` items with `call_id` and `output` (tool results)
 ///
 /// We implement custom deserialization to handle both formats.
@@ -50,6 +51,11 @@ pub enum ResponsesInputItem {
     Message {
         role: String,
         content: Vec<ResponsesContentPart>,
+    },
+    FunctionCall {
+        call_id: String,
+        name: String,
+        arguments: String,
     },
     FunctionCallOutput {
         call_id: String,
@@ -64,8 +70,31 @@ impl<'de> Deserialize<'de> for ResponsesInputItem {
     {
         let value = Value::deserialize(deserializer)?;
 
-        // Check if this is a function_call_output item
+        // Check if this is a function call item
         if let Some(item_type) = value.get("type").and_then(|v| v.as_str()) {
+            if item_type == "function_call" {
+                let call_id = value
+                    .get("call_id")
+                    .or_else(|| value.get("id"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let name = value
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string();
+                let arguments = match value.get("arguments") {
+                    Some(Value::String(raw)) => raw.clone(),
+                    Some(raw) => raw.to_string(),
+                    None => "{}".into(),
+                };
+                return Ok(ResponsesInputItem::FunctionCall {
+                    call_id,
+                    name,
+                    arguments,
+                });
+            }
             if item_type == "function_call_output" {
                 let call_id = value
                     .get("call_id")
@@ -145,6 +174,7 @@ pub enum ResponsesOutputItem {
     #[serde(rename = "function_call")]
     FunctionCall {
         id: String,
+        call_id: String,
         name: String,
         arguments: String,
         status: String,
@@ -320,6 +350,22 @@ fn responses_input_item_to_ir_with_cache(
             vec![Message {
                 role: ir_role,
                 content: blocks,
+            }]
+        }
+        ResponsesInputItem::FunctionCall {
+            call_id,
+            name,
+            arguments,
+        } => {
+            let input = serde_json::from_str(arguments).unwrap_or(Value::Null);
+            vec![Message {
+                role: Role::Assistant,
+                content: vec![ContentBlock::ToolUse {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    input: canonical_json(&input),
+                    cache_control: None,
+                }],
             }]
         }
         ResponsesInputItem::FunctionCallOutput { call_id, output } => {
@@ -527,7 +573,8 @@ pub fn ir_to_responses_response(ir: ChatResponse) -> ResponsesResponse {
             }
             for (id, name, input) in tool_calls {
                 output.push(ResponsesOutputItem::FunctionCall {
-                    id,
+                    id: id.clone(),
+                    call_id: id,
                     name,
                     arguments: canonical_json_string(&input),
                     status: "completed".into(),
@@ -1235,6 +1282,62 @@ mod tests {
             }
             _ => panic!("expected ToolResult content block"),
         }
+    }
+
+    #[test]
+    fn function_call_deserialization() {
+        let raw = serde_json::json!({
+            "type": "function_call",
+            "id": "item_abc123",
+            "call_id": "call_abc123",
+            "name": "Search",
+            "arguments": "{\"query\":\"ferryllm\"}"
+        });
+
+        let item: ResponsesInputItem = serde_json::from_value(raw).expect("parse function_call");
+        let ir_msgs = responses_input_item_to_ir(&item);
+        assert_eq!(ir_msgs.len(), 1);
+        assert_eq!(ir_msgs[0].role, Role::Assistant);
+        match &ir_msgs[0].content[0] {
+            ContentBlock::ToolUse {
+                id, name, input, ..
+            } => {
+                assert_eq!(id, "call_abc123");
+                assert_eq!(name, "Search");
+                assert_eq!(input["query"], "ferryllm");
+            }
+            _ => panic!("expected ToolUse content block"),
+        }
+    }
+
+    #[test]
+    fn non_streaming_function_call_response_includes_call_id() {
+        let ir = ChatResponse {
+            id: "resp_1".into(),
+            model: "gpt-5.4".into(),
+            choices: vec![Choice {
+                index: 0,
+                message: Some(Message {
+                    role: Role::Assistant,
+                    content: vec![ContentBlock::ToolUse {
+                        id: "call_abc123".into(),
+                        name: "Search".into(),
+                        input: serde_json::json!({"query":"ferryllm"}),
+                        cache_control: None,
+                    }],
+                }),
+                delta: None,
+                finish_reason: Some(FinishReason::ToolCalls),
+            }],
+            usage: Usage::default(),
+        };
+
+        let response = ir_to_responses_response(ir);
+        let value = serde_json::to_value(response).expect("serialize response");
+        assert_eq!(value["output"][0]["type"], "function_call");
+        assert_eq!(value["output"][0]["id"], "call_abc123");
+        assert_eq!(value["output"][0]["call_id"], "call_abc123");
+        assert_eq!(value["output"][0]["name"], "Search");
     }
 
     #[test]

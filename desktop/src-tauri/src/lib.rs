@@ -118,6 +118,8 @@ struct LaunchRequest {
     #[serde(default = "default_tool")]
     tool: String,
     #[serde(default)]
+    provider_name: Option<String>,
+    #[serde(default)]
     client_model: Option<String>,
     #[serde(default)]
     client_reasoning_effort: Option<String>,
@@ -129,6 +131,8 @@ struct ResumeSessionRequest {
     cwd: String,
     listen: String,
     tool: String,
+    #[serde(default)]
+    provider_name: Option<String>,
     #[serde(default)]
     client_model: Option<String>,
     #[serde(default)]
@@ -537,6 +541,7 @@ fn launch_cli_inner(request: LaunchRequest) -> Result<(), String> {
     let env = client_gateway_env(
         &request.listen,
         &request.tool,
+        request.provider_name.as_deref(),
         request.client_model.as_deref(),
         request.client_reasoning_effort.as_deref(),
     );
@@ -602,6 +607,7 @@ fn resume_ai_session_inner(request: ResumeSessionRequest) -> Result<(), String> 
     let env = client_gateway_env(
         &request.listen,
         &request.tool,
+        request.provider_name.as_deref(),
         request.client_model.as_deref(),
         request.client_reasoning_effort.as_deref(),
     );
@@ -939,6 +945,7 @@ fn launch_vscode_inner(request: LaunchRequest) -> Result<(), String> {
     let env = client_gateway_env(
         &request.listen,
         &request.tool,
+        request.provider_name.as_deref(),
         request.client_model.as_deref(),
         request.client_reasoning_effort.as_deref(),
     );
@@ -983,17 +990,21 @@ fn launch_vscode_inner(request: LaunchRequest) -> Result<(), String> {
 fn client_gateway_env(
     listen: &str,
     tool: &str,
+    provider_name: Option<&str>,
     client_model: Option<&str>,
     client_reasoning_effort: Option<&str>,
 ) -> Vec<(&'static str, String)> {
     let host = gateway_host(listen);
     let model = normalized_client_model(tool, client_model);
+    let client_key = provider_name
+        .map(provider_hint_api_key)
+        .unwrap_or_else(|| "ferryllm".into());
     match tool {
         "claude" => {
             let mut env = vec![
-            ("ANTHROPIC_API_KEY", "ferryllm".into()),
-            ("ANTHROPIC_BASE_URL", format!("http://{}", host)),
-            ("ANTHROPIC_MODEL", model.clone()),
+                ("ANTHROPIC_API_KEY", client_key),
+                ("ANTHROPIC_BASE_URL", format!("http://{}", host)),
+                ("ANTHROPIC_MODEL", model.clone()),
             (
                 "ANTHROPIC_DEFAULT_HAIKU_MODEL",
                 "claude-3-5-haiku-latest".into(),
@@ -1007,7 +1018,7 @@ fn client_gateway_env(
             env
         }
         "opencode" => vec![
-            ("OPENAI_API_KEY", "ferryllm".into()),
+            ("OPENAI_API_KEY", client_key),
             ("OPENAI_BASE_URL", format!("http://{}/v1", host)),
             (
                 "OPENCODE_CONFIG_CONTENT",
@@ -1015,10 +1026,24 @@ fn client_gateway_env(
             ),
         ],
         _ => vec![
-            ("OPENAI_API_KEY", "ferryllm".into()),
+            ("OPENAI_API_KEY", client_key),
             ("OPENAI_BASE_URL", format!("http://{}/v1", host)),
         ],
     }
+}
+
+fn provider_hint_api_key(provider_name: &str) -> String {
+    format!("ferryllm-provider:{}", hex_encode(provider_name.as_bytes()))
+}
+
+fn hex_encode(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
 }
 
 fn opencode_gateway_config(host: &str, model: &str) -> String {

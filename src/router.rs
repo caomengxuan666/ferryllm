@@ -219,6 +219,33 @@ impl Router {
             model
         )))
     }
+
+    pub fn resolve_for_provider(
+        &self,
+        provider: &str,
+        model: &str,
+    ) -> Result<ResolvedRoute, AdapterError> {
+        let backend_model = strip_internal_model_alias(model).unwrap_or(model);
+        let Some(adapter) = self.adapters.get(provider) else {
+            return Err(AdapterError::BackendError(format!(
+                "provider '{}' is not registered",
+                provider
+            )));
+        };
+        if !adapter.supports_model(backend_model) {
+            return Err(AdapterError::BackendError(format!(
+                "provider '{}' does not support model '{}'",
+                provider, backend_model
+            )));
+        }
+        Ok(ResolvedRoute {
+            adapter: Arc::clone(adapter),
+            provider: provider.to_string(),
+            model: backend_model.to_string(),
+            fallbacks: Vec::new(),
+            model_rewritten: backend_model != model,
+        })
+    }
 }
 
 fn strip_internal_model_alias(model: &str) -> Option<&str> {
@@ -282,7 +309,7 @@ mod tests {
         }
 
         fn supports_model(&self, _model: &str) -> bool {
-            false
+            true
         }
 
         fn protocol(&self) -> crate::adapter::Protocol {
@@ -347,5 +374,20 @@ mod tests {
         assert_eq!(resolved.provider, "primary");
         assert_eq!(resolved.model, "gpt-5.4");
         assert!(resolved.model_rewritten);
+    }
+
+    #[test]
+    fn resolve_for_provider_uses_named_provider_for_plain_model() {
+        let mut router = Router::new();
+        router.register_adapter_as("first", Arc::new(MockAdapter { name: "first" }));
+        router.register_adapter_as("second", Arc::new(MockAdapter { name: "second" }));
+
+        let resolved = router
+            .resolve_for_provider("second", "gpt-5.4")
+            .expect("resolve provider hint");
+
+        assert_eq!(resolved.provider, "second");
+        assert_eq!(resolved.model, "gpt-5.4");
+        assert!(!resolved.model_rewritten);
     }
 }
