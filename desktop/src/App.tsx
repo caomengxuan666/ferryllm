@@ -82,12 +82,16 @@ type ProviderRuntimeRule = {
   clientModelRewrites?: Record<string, string>;
 };
 
+const DEFAULT_CLIENT_MODEL = "claude-sonnet-4-5";
+const DEFAULT_OPENAI_CLIENT_MODEL = "gpt-5.4";
+
 type RouteConfig = {
   match: string;
   match_type?: "prefix" | "exact";
   provider: string;
   fallback_providers?: string[];
   rewrite_model?: string;
+  client_kind?: "claude" | "openai";
 };
 
 type AppConfig = {
@@ -103,7 +107,15 @@ type AppConfig = {
 type CommandResult = { ok: boolean; code: number | null; stdout: string; stderr: string };
 type SaveResult = { path: string; validation: CommandResult; reloaded: boolean };
 type LogEntry = { ts_ms: number; stream: string; line: string };
-type ProcessStatus = { running: boolean; executable: string; config_path: string; pid: number | null; logs: LogEntry[] };
+type ProcessStatus = {
+  running: boolean;
+  managed: boolean;
+  source: "managed" | "external" | "stopped";
+  executable: string;
+  config_path: string;
+  pid: number | null;
+  logs: LogEntry[];
+};
 type ProbeResult = { ok: boolean; status: number | null; body: string; error: string | null };
 type ServerSnapshot = {
   status: ProcessStatus;
@@ -113,6 +125,26 @@ type ServerSnapshot = {
   models: ProbeResult;
   fetched_at_ms: number;
 };
+
+function gatewayStatusLabel(status?: ProcessStatus | null) {
+  if (!status?.running) return "Stopped";
+  return status.source === "external" ? "External" : "Running";
+}
+
+function gatewayStatusTone(status?: ProcessStatus | null): "success" | "warning" | "muted" {
+  if (!status?.running) return "warning";
+  return status.source === "external" ? "warning" : "success";
+}
+
+function gatewayStatusDetail(status?: ProcessStatus | null) {
+  if (!status?.running) return "Process is stopped";
+  if (status.source === "external") return "Detected on listen address";
+  return status.pid ? `PID ${status.pid}` : "Managed process";
+}
+
+function commandResultMessage(result: CommandResult) {
+  return (result.stderr || result.stdout || "Config validation failed").trim();
+}
 type AISession = {
   id: string;
   tool: AITool;
@@ -138,10 +170,12 @@ type MetricSample = {
 };
 
 type View = "dashboard" | "usage-logs" | "providers" | "provider-detail" | "launcher" | "settings";
-type DetailTab = "settings" | "routes" | "runtime";
+type DetailTab = "settings" | "models" | "routes" | "runtime";
 type SettingsTab = "general" | "runtime" | "security" | "cache" | "advanced" | "about";
 type PresetCategoryFilter = "all" | ProviderPresetCategory;
 type AITool = "codex" | "claude" | "opencode";
+type ReasoningEffort = "none" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultracode";
+const REASONING_OPTIONS = ["", "none", "minimal", "low", "medium", "high", "xhigh", "max", "ultracode"];
 
 type RecentLaunch = {
   id: string;
@@ -150,6 +184,7 @@ type RecentLaunch = {
   launchType: "cli" | "vscode";
   providerName: string;
   providerType: string;
+  reasoningEffort?: ReasoningEffort;
   configPath: string;
   lastUsed: number;
 };
@@ -160,6 +195,7 @@ type WorkspaceBinding = {
   providerType: string;
   tool: AITool;
   launchType: LaunchTarget;
+  reasoningEffort?: ReasoningEffort;
   updatedAt: number;
 };
 type WorkspaceEntry = {
@@ -169,6 +205,7 @@ type WorkspaceEntry = {
   lastUsed: number;
   defaultTool: AITool;
   defaultLaunchType: LaunchTarget;
+  defaultReasoningEffort?: ReasoningEffort;
   defaultProviderName: string;
   defaultProviderType: string;
   sessions: RecentLaunch[];
@@ -176,7 +213,7 @@ type WorkspaceEntry = {
 
 /* ── Toast ─────────────────────────────────────────────────────────── */
 
-type Toast = { id: number; message: string; type: "info" | "success" | "error" };
+type Toast = { id: number; message: string; type: "info" | "success" | "warning" | "error" };
 
 function isTauriRuntime() {
   return Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__);
@@ -197,11 +234,13 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
               "flex items-center gap-3 rounded-xl px-4 py-3 text-sm font-medium shadow-lg backdrop-blur-sm",
               "border border-border bg-surface/95 text-fg",
               t.type === "success" && "border-success/40 bg-success-soft",
+              t.type === "warning" && "border-accent/40 bg-accent-soft",
               t.type === "error" && "border-danger/40 bg-danger-soft"
             )}
             onClick={() => onDismiss(t.id)}
           >
             {t.type === "success" && <CheckCircle2 size={16} className="text-success shrink-0" />}
+            {t.type === "warning" && <AlertTriangle size={16} className="text-accent shrink-0" />}
             {t.type === "error" && <Zap size={16} className="text-danger shrink-0" />}
             <span>{t.message}</span>
           </motion.div>
@@ -215,7 +254,7 @@ function ToastContainer({ toasts, onDismiss }: { toasts: Toast[]; onDismiss: (id
 
 const emptyConfig: AppConfig = {
   server: { listen: "127.0.0.1:3000", request_timeout_secs: 120, body_limit_mb: 32 },
-  logging: { level: "info", format: "text" },
+  logging: { level: "info", format: "text", ansi: false },
   auth: { enabled: false },
   metrics: { enabled: true },
   prompt_cache: {
@@ -403,31 +442,124 @@ function findProviderRuntimeRule(provider: ProviderConfig): ProviderRuntimeRule 
   return providerRuntimeRules.find((rule) => rule.markers.some((marker) => id.includes(marker)));
 }
 
-function runtimeConfigForGateway(c: AppConfig, selectedProviderName?: string): AppConfig {
+function runtimeConfigForGateway(c: AppConfig): AppConfig {
   const next = cloneConfig(c);
   next.providers = next.providers ?? [];
-  if (!(next.routes ?? []).length && next.providers.length > 0) {
-    const provider = next.providers.find((item) => item.name === selectedProviderName)
-      ?? (next.providers.length === 1 ? next.providers[0] : undefined)
-      ?? next.providers[0];
-    if (provider?.name) {
-      next.routes = defaultRoutesForProvider(provider);
-    }
-  }
+  const existingRoutes = next.routes ?? [];
+  const aliasRoutes = providerAliasRoutes(next.providers, existingRoutes);
+  next.routes = mergeRoutes(aliasRoutes, existingRoutes).map(runtimeRouteConfig);
   return next;
 }
 
-function defaultRoutesForProvider(provider: ProviderConfig): RouteConfig[] {
-  const rewrites = findProviderRuntimeRule(provider)?.clientModelRewrites ?? {};
-  return [
-    ...Object.entries(rewrites).map(([match, rewrite_model]) => ({
-      match,
-      match_type: "exact" as const,
-      provider: provider.name,
-      rewrite_model,
-    })),
-    { match: "*", match_type: "prefix" as const, provider: provider.name },
-  ];
+function runtimeRouteConfig(route: RouteConfig): RouteConfig {
+  return {
+    match: route.match,
+    match_type: route.match_type,
+    provider: route.provider,
+    fallback_providers: route.fallback_providers,
+    rewrite_model: route.rewrite_model,
+  };
+}
+
+function stableHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < value.length; i += 1) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(36);
+}
+
+function providerSlug(provider: ProviderConfig): string {
+  const slug = provider.name
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  const fingerprint = stableHash(`${provider.name}\0${provider.type}\0${provider.base_url}`);
+  return `${slug ? `${slug}-` : ""}${fingerprint}`;
+}
+
+function providerAliasModel(provider: ProviderConfig | undefined, baseModel = DEFAULT_CLIENT_MODEL): string {
+  if (!provider) return baseModel;
+  return `${baseModel}--ferryllm-${providerSlug(provider)}`;
+}
+
+function providerAliasTarget(provider: ProviderConfig, routes: RouteConfig[], baseModel = DEFAULT_CLIENT_MODEL): string {
+  const rewrites = provider ? findProviderRuntimeRule(provider)?.clientModelRewrites ?? {} : {};
+  if (rewrites[baseModel]) return rewrites[baseModel];
+  const exactRoute = routes.find((route) =>
+    route.provider === provider.name
+    && route.match === baseModel
+    && (route.match_type ?? "prefix") === "exact"
+  );
+  if (exactRoute?.rewrite_model) return exactRoute.rewrite_model;
+  if (baseModel === DEFAULT_CLIENT_MODEL && provider.type !== "anthropic") {
+    return openAiClientModelForProvider(provider);
+  }
+  if (baseModel === DEFAULT_OPENAI_CLIENT_MODEL && provider.type === "anthropic") {
+    return DEFAULT_CLIENT_MODEL;
+  }
+  return baseModel;
+}
+
+function openAiClientModelForProvider(provider: ProviderConfig): string {
+  return findProviderRuntimeRule(provider)?.clientModelRewrites?.[DEFAULT_CLIENT_MODEL] ?? DEFAULT_OPENAI_CLIENT_MODEL;
+}
+
+function providerAliasRoutes(providers: ProviderConfig[], routes: RouteConfig[]): RouteConfig[] {
+  return providers
+    .filter((provider) => provider.name)
+    .flatMap((provider) => {
+      const baseModels = Array.from(new Set([DEFAULT_CLIENT_MODEL, openAiClientModelForProvider(provider)]));
+      return baseModels.flatMap((baseModel) => {
+        const kind = baseModel === DEFAULT_CLIENT_MODEL ? "claude" as const : "openai" as const;
+        const hasUserMapping = routes.some((route) =>
+          route.provider === provider.name
+          && route.client_kind === kind
+          && (route.match_type ?? "prefix") === "exact"
+          && route.match.trim()
+        );
+        if (hasUserMapping) return [];
+        return [{
+          match: providerAliasModel(provider, baseModel),
+          match_type: "exact" as const,
+          provider: provider.name,
+          rewrite_model: providerAliasTarget(provider, routes, baseModel),
+          client_kind: kind,
+        }];
+      });
+    });
+}
+
+function mergeRoutes(preferred: RouteConfig[], existing: RouteConfig[]): RouteConfig[] {
+  const seen = new Set<string>();
+  const merged: RouteConfig[] = [];
+  for (const route of [...preferred, ...existing]) {
+    const key = `${route.match_type ?? "prefix"}\0${route.match}\0${route.provider}\0${route.rewrite_model ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(route);
+  }
+  return merged;
+}
+
+function clientKindForTool(tool: AITool): "claude" | "openai" {
+  return tool === "claude" ? "claude" : "openai";
+}
+
+function clientModelForProvider(provider: ProviderConfig | undefined, routes: RouteConfig[], tool: AITool): string {
+  if (!provider) return tool === "claude" ? DEFAULT_CLIENT_MODEL : DEFAULT_OPENAI_CLIENT_MODEL;
+  const kind = clientKindForTool(tool);
+  const configured = routes.find((route) =>
+    route.provider === provider.name
+    && route.client_kind === kind
+    && (route.match_type ?? "prefix") === "exact"
+    && route.match.trim()
+  );
+  if (configured) return configured.match;
+  if (kind === "claude") return providerAliasModel(provider, DEFAULT_CLIENT_MODEL);
+  return providerAliasModel(provider, openAiClientModelForProvider(provider));
 }
 
 function parsePrometheusMetrics(body: string): MetricSample {
@@ -749,6 +881,63 @@ function providerKeyInfo(provider: ProviderConfig): ProviderKeyInfo {
   return { label: "No key source", detail: "add env, file, URL, or direct key", ok: false };
 }
 
+function parseProviderModels(body: string): string[] {
+  try {
+    const value = JSON.parse(body);
+    const candidates: unknown[] = Array.isArray(value)
+      ? value
+      : Array.isArray(value.models)
+        ? value.models
+        : Array.isArray(value.data)
+          ? value.data
+          : [];
+    return Array.from(new Set<string>(candidates
+      .map((item: unknown) => {
+        if (typeof item === "string") return item;
+        if (item && typeof item === "object") {
+          const object = item as Record<string, unknown>;
+          return typeof object.id === "string" ? object.id : typeof object.name === "string" ? object.name : "";
+        }
+        return "";
+      })
+      .map((item: string) => item.trim())
+      .filter(Boolean))).sort((a, b) => a.localeCompare(b));
+  } catch {
+    return [];
+  }
+}
+
+function providerMappingRows(provider: ProviderConfig, routes: RouteConfig[]) {
+  const defaults = [
+    {
+      kind: "claude" as const,
+      label: "Claude clients",
+      fallbackClient: providerAliasModel(provider, DEFAULT_CLIENT_MODEL),
+      fallbackUpstream: providerAliasTarget(provider, routes, DEFAULT_CLIENT_MODEL),
+    },
+    {
+      kind: "openai" as const,
+      label: "Codex / OpenCode",
+      fallbackClient: providerAliasModel(provider, openAiClientModelForProvider(provider)),
+      fallbackUpstream: providerAliasTarget(provider, routes, openAiClientModelForProvider(provider)),
+    },
+  ];
+  return defaults.map((row) => {
+    const routeIndex = routes.findIndex((route) =>
+      route.provider === provider.name
+      && route.client_kind === row.kind
+      && (route.match_type ?? "prefix") === "exact"
+    );
+    const route = routeIndex >= 0 ? routes[routeIndex] : undefined;
+    return {
+      ...row,
+      routeIndex,
+      clientModel: route?.match || row.fallbackClient,
+      upstreamModel: route?.rewrite_model || row.fallbackUpstream,
+    };
+  });
+}
+
 function workspaceName(path: string): string {
   const parts = path.split(/[\\/]/).filter(Boolean);
   return parts[parts.length - 1] || path || "Workspace";
@@ -774,6 +963,7 @@ function buildWorkspaces(launches: RecentLaunch[], pinnedPaths: Set<string>, bin
         lastUsed: latest?.lastUsed ?? 0,
         defaultTool: binding?.tool ?? latest?.tool ?? "codex",
         defaultLaunchType: binding?.launchType ?? latest?.launchType ?? "cli",
+        defaultReasoningEffort: binding?.reasoningEffort ?? latest?.reasoningEffort,
         defaultProviderName: binding?.providerName ?? latest?.providerName ?? "",
         defaultProviderType: binding?.providerType ?? latest?.providerType ?? "openai",
         sessions: sorted,
@@ -888,6 +1078,7 @@ function App() {
   const [workspaceBindings, setWorkspaceBindings] = useState<Record<string, WorkspaceBinding>>(() => {
     try { return JSON.parse(localStorage.getItem("ferryllm-workspace-bindings") || "{}"); } catch { return {}; }
   });
+  const [launcherStateLoaded, setLauncherStateLoaded] = useState(() => !isTauriRuntime());
   const [launchTool, setLaunchTool] = useState<AITool>("codex");
   const [launcherTarget] = useState<LaunchTarget>("cli");
   const [workspaceSearch, setWorkspaceSearch] = useState("");
@@ -898,6 +1089,10 @@ function App() {
   const [providerSearch, setProviderSearch] = useState("");
   const [presetFilter, setPresetFilter] = useState<PresetCategoryFilter>("all");
   const [presetsExpanded, setPresetsExpanded] = useState(false);
+  const [providerModelCatalog, setProviderModelCatalog] = useState<Record<string, string[]>>(() => {
+    try { return JSON.parse(localStorage.getItem("ferryllm-provider-models") || "{}"); } catch { return {}; }
+  });
+  const [modelProbeBusy, setModelProbeBusy] = useState(false);
   const toastId = useRef(0);
 
   const providers = config.providers ?? [];
@@ -1019,6 +1214,10 @@ function App() {
   }, [activeView]);
 
   useEffect(() => {
+    localStorage.setItem("ferryllm-provider-models", JSON.stringify(providerModelCatalog));
+  }, [providerModelCatalog]);
+
+  useEffect(() => {
     if (!workspaces.length) {
       if (selectedWorkspacePath) setSelectedWorkspacePath("");
       return;
@@ -1027,6 +1226,39 @@ function App() {
       setSelectedWorkspacePath(workspaces[0].path);
     }
   }, [selectedWorkspacePath, workspaces]);
+
+  useEffect(() => {
+    (async () => {
+      if (!isTauriRuntime()) {
+        setLauncherStateLoaded(true);
+        return;
+      }
+      try {
+        const stored = await invoke<string | null>("load_launcher_state");
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (Array.isArray(parsed.launches)) setRecentLaunches(parsed.launches);
+          if (parsed.bindings && typeof parsed.bindings === "object") setWorkspaceBindings(parsed.bindings);
+          if (Array.isArray(parsed.pins)) setWorkspacePins(parsed.pins);
+        }
+      } catch {
+        /* keep localStorage fallback */
+      } finally {
+        setLauncherStateLoaded(true);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!launcherStateLoaded) return;
+    const state = { launches: recentLaunches, bindings: workspaceBindings, pins: workspacePins };
+    localStorage.setItem("ferryllm-launches", JSON.stringify(recentLaunches));
+    localStorage.setItem("ferryllm-workspace-bindings", JSON.stringify(workspaceBindings));
+    localStorage.setItem("ferryllm-workspace-pins", JSON.stringify(workspacePins));
+    if (isTauriRuntime()) {
+      invoke("save_launcher_state", { request: { state } }).catch(() => {});
+    }
+  }, [launcherStateLoaded, recentLaunches, workspaceBindings, workspacePins]);
 
   /* ── Load config from file on startup ── */
   useEffect(() => {
@@ -1052,7 +1284,7 @@ function App() {
       const redacted = redactConfigSecrets(config);
       localStorage.setItem("ferryllm-config", JSON.stringify(redacted));
       if (isTauriRuntime()) {
-        invoke("save_config_to_default", { request: { config: redacted } }).catch(() => {});
+        invoke("save_config_to_default", { request: { config } }).catch(() => {});
       }
     }, 500);
     return () => window.clearTimeout(timeout);
@@ -1072,9 +1304,8 @@ function App() {
   }
 
   async function persistRunnableConfig(hotReloadConfig = false): Promise<SaveResult> {
-    const activeProviderName = selectedProviderConfig?.name?.trim() || undefined;
     return await invoke<SaveResult>("save_config_file", {
-      request: { path: "", config: runtimeConfigForGateway(config, activeProviderName), executable, hot_reload: hotReloadConfig },
+      request: { path: "", config: runtimeConfigForGateway(config), executable, hot_reload: hotReloadConfig },
     });
   }
 
@@ -1094,7 +1325,7 @@ function App() {
     try {
       const r = await invoke<CommandResult>("validate_config_document", { request: { executable, config } });
       setValidation(r);
-      addToast(r.ok ? "Config is valid" : "Validation failed", r.ok ? "success" : "error");
+      addToast(r.ok ? "Config is valid" : commandResultMessage(r), r.ok ? "success" : "error");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1105,12 +1336,15 @@ function App() {
       const saved = await persistRunnableConfig(false);
       setValidation(saved.validation);
       if (!saved.validation.ok) {
-        addToast("Validation failed", "error");
+        addToast(commandResultMessage(saved.validation), "error");
         return;
       }
-      const s = await invoke<ProcessStatus>("start_server", { request: { executable, config_path: saved.path } });
+      const current = await invoke<ProcessStatus>("server_status");
+      const s = await invoke<ProcessStatus>("start_server", {
+        request: { executable, config_path: saved.path, replace_existing: current.source === "external" },
+      });
       setStatus(s);
-      addToast("ferryllm started", "success");
+      addToast(s.source === "external" ? "Detected existing ferryllm gateway" : "ferryllm started", "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1120,7 +1354,7 @@ function App() {
     try {
       const s = await invoke<ProcessStatus>("stop_server");
       setStatus(s);
-      addToast("ferryllm stopped", "success");
+      addToast(s.source === "external" ? "Gateway is running outside this window" : "ferryllm stopped", s.source === "external" ? "warning" : "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1131,12 +1365,12 @@ function App() {
       const saved = await persistRunnableConfig(false);
       setValidation(saved.validation);
       if (!saved.validation.ok) {
-        addToast("Validation failed", "error");
+        addToast(commandResultMessage(saved.validation), "error");
         return;
       }
-      const s = await invoke<ProcessStatus>("restart_server", { request: { executable, config_path: saved.path } });
+      const s = await invoke<ProcessStatus>("restart_server", { request: { executable, config_path: saved.path, replace_existing: true } });
       setStatus(s);
-      addToast("ferryllm restarted", "success");
+      addToast(s.source === "external" ? "Detected existing ferryllm gateway" : "ferryllm restarted", "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1149,25 +1383,25 @@ function App() {
     const saved = await persistRunnableConfig(true);
     setValidation(saved.validation);
     if (!saved.validation.ok) {
-      addToast("Gateway config validation failed", "error");
+      addToast(commandResultMessage(saved.validation), "error");
       return false;
     }
 
     const current = await invoke<ProcessStatus>("server_status");
-    if (current.running) {
+    if (current.running && current.source !== "external") {
       setStatus(current);
       return true;
     }
 
     const started = await invoke<ProcessStatus>("start_server", {
-      request: { executable, config_path: saved.path },
+      request: { executable, config_path: saved.path, replace_existing: current.source === "external" },
     });
     setStatus(started);
     if (!started.running) {
       addToast("Gateway failed to start", "error");
       return false;
     }
-    addToast("Gateway started", "success");
+    addToast(started.source === "external" ? "Detected existing ferryllm gateway" : "Gateway started", "success");
     return true;
   }
 
@@ -1200,7 +1434,7 @@ function App() {
     }
   }
 
-  function recordLaunch(directory: string, tool: AITool, launchType: LaunchTarget, provider = selectedProviderConfig) {
+  function recordLaunch(directory: string, tool: AITool, launchType: LaunchTarget, provider = selectedProviderConfig, reasoningEffort?: ReasoningEffort) {
     const now = Date.now();
     const entry: RecentLaunch = {
       id: now.toString(36),
@@ -1209,6 +1443,7 @@ function App() {
       launchType,
       providerName: provider?.name || "unconfigured",
       providerType: provider?.type || "openai",
+      reasoningEffort,
       configPath: "localStorage",
       lastUsed: now,
     };
@@ -1221,6 +1456,7 @@ function App() {
             providerType: provider.type,
             tool,
             launchType,
+            reasoningEffort,
             updatedAt: now,
           },
         };
@@ -1262,6 +1498,7 @@ function App() {
           providerType: provider.type,
           tool: current?.tool ?? workspace?.defaultTool ?? launchTool,
           launchType: current?.launchType ?? workspace?.defaultLaunchType ?? launcherTarget,
+          reasoningEffort: current?.reasoningEffort ?? workspace?.defaultReasoningEffort,
           updatedAt: Date.now(),
         },
       };
@@ -1270,6 +1507,30 @@ function App() {
     });
     const index = providers.findIndex((item) => item.name === provider.name);
     if (index >= 0) setSelectedProvider(index);
+  }
+
+  function updateWorkspaceReasoning(path: string, reasoningEffort: string) {
+    setWorkspaceBindings((prev) => {
+      const current = prev[path];
+      const workspace = workspaces.find((item) => item.path === path);
+      const provider = resolveWorkspaceProvider(workspace ?? {
+        defaultProviderName: current?.providerName ?? "",
+        defaultProviderType: current?.providerType ?? "openai",
+      });
+      const next = {
+        ...prev,
+        [path]: {
+          providerName: current?.providerName ?? workspace?.defaultProviderName ?? provider?.name ?? "",
+          providerType: current?.providerType ?? workspace?.defaultProviderType ?? provider?.type ?? "openai",
+          tool: current?.tool ?? workspace?.defaultTool ?? launchTool,
+          launchType: current?.launchType ?? workspace?.defaultLaunchType ?? launcherTarget,
+          reasoningEffort: (reasoningEffort || undefined) as ReasoningEffort | undefined,
+          updatedAt: Date.now(),
+        },
+      };
+      localStorage.setItem("ferryllm-workspace-bindings", JSON.stringify(next));
+      return next;
+    });
   }
 
   function deleteLaunch(id: string) {
@@ -1370,14 +1631,16 @@ function App() {
       return;
     }
     const listen = valueAsString(config.server?.listen) || "127.0.0.1:3000";
+    const clientModel = clientModelForProvider(provider, routes, tool);
+    const reasoningEffort = workspace.defaultReasoningEffort;
     try {
       if (!(await ensureGatewayRunning())) return;
       if (target === "vscode") {
-        await invoke("launch_vscode", { request: { directory: workspace.path, listen, provider_type: provider.type, tool } });
+        await invoke("launch_vscode", { request: { directory: workspace.path, listen, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       } else {
-        await invoke("launch_cli", { request: { directory: workspace.path, listen, provider_type: provider.type, tool } });
+        await invoke("launch_cli", { request: { directory: workspace.path, listen, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       }
-      recordLaunch(workspace.path, tool, target, provider);
+      recordLaunch(workspace.path, tool, target, provider, reasoningEffort);
       addToast(`${target === "vscode" ? "VS Code" : `${tool} CLI`} launched`, "success");
     } catch (e) { addToast(String(e), "error"); }
   }
@@ -1391,12 +1654,14 @@ function App() {
       return;
     }
     const listen = valueAsString(config.server?.listen) || "127.0.0.1:3000";
+    const clientModel = clientModelForProvider(provider, routes, session.tool);
+    const reasoningEffort = workspace?.defaultReasoningEffort;
     try {
       if (!(await ensureGatewayRunning())) return;
       await invoke("resume_ai_session", {
-        request: { id: session.id, cwd: session.cwd, listen, provider_type: provider.type, tool: session.tool },
+        request: { id: session.id, cwd: session.cwd, listen, provider_type: provider.type, tool: session.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort },
       });
-      recordLaunch(session.cwd, session.tool, "cli", provider);
+      recordLaunch(session.cwd, session.tool, "cli", provider, reasoningEffort);
       addToast(`${session.tool} session resumed`, "success");
     } catch (e) { addToast(String(e), "error"); }
   }
@@ -1405,12 +1670,22 @@ function App() {
     const listen = valueAsString(config.server?.listen) || "127.0.0.1:3000";
     const providerIndex = providers.findIndex((provider) => provider.name === item.providerName);
     if (providerIndex >= 0 && providerIndex !== selectedProvider) setSelectedProvider(providerIndex);
+    const provider = providers[providerIndex]
+      ?? providers.find((candidate) => candidate.type === item.providerType && providers.filter((inner) => inner.type === item.providerType).length === 1)
+      ?? selectedProviderConfig;
+    if (!provider) {
+      addToast("Add a provider before launching a workspace", "error");
+      setActiveView("providers");
+      return;
+    }
+    const clientModel = clientModelForProvider(provider, routes, item.tool);
+    const reasoningEffort = item.reasoningEffort;
     try {
       if (!(await ensureGatewayRunning())) return;
       if (item.launchType === "vscode") {
-        await invoke("launch_vscode", { request: { directory: item.directory, listen, provider_type: item.providerType, tool: item.tool } });
+        await invoke("launch_vscode", { request: { directory: item.directory, listen, provider_type: provider.type, tool: item.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       } else {
-        await invoke("launch_cli", { request: { directory: item.directory, listen, provider_type: item.providerType, tool: item.tool } });
+        await invoke("launch_cli", { request: { directory: item.directory, listen, provider_type: provider.type, tool: item.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       }
       setRecentLaunches((prev) => {
         const next = prev.map((r) => r.id === item.id ? { ...r, lastUsed: Date.now() } : r).sort((a, b) => b.lastUsed - a.lastUsed);
@@ -1534,6 +1809,77 @@ function App() {
     }
   }
 
+  async function fetchProviderModels(provider: ProviderConfig) {
+    setModelProbeBusy(true);
+    try {
+      const result = await invoke<ProbeResult>("probe_provider", { request: { ...provider, mode: "models" } });
+      if (!result.ok) {
+        addToast(result.error ?? `${provider.name} model endpoint not found`, "error");
+        return;
+      }
+      const models = parseProviderModels(result.body);
+      setProviderModelCatalog((prev) => ({ ...prev, [provider.name]: models }));
+      setValidation({ ok: true, code: result.status, stdout: models.length ? models.join("\n") : result.body || "model endpoint ok", stderr: "" });
+      addToast(models.length ? `${models.length} models loaded` : `${provider.name} model endpoint responded`, "success");
+    } catch (e) {
+      addToast(String(e), "error");
+    } finally {
+      setModelProbeBusy(false);
+    }
+  }
+
+  function updateProviderModelMapping(provider: ProviderConfig, kind: "claude" | "openai", patch: Partial<{ clientModel: string; upstreamModel: string }>) {
+    setConfig((cur) => {
+      const next = cloneConfig(cur);
+      const list = [...(next.routes ?? [])];
+      const rows = providerMappingRows(provider, list);
+      const current = rows.find((row) => row.kind === kind);
+      if (!current) return cur;
+      const routeIndex = current.routeIndex >= 0
+        ? current.routeIndex
+        : list.findIndex((route) =>
+          route.provider === provider.name
+          && route.match === current.clientModel
+          && (route.match_type ?? "prefix") === "exact"
+        );
+      const route: RouteConfig = {
+        match: patch.clientModel ?? current.clientModel,
+        match_type: "exact",
+        provider: provider.name,
+        rewrite_model: patch.upstreamModel ?? current.upstreamModel,
+        client_kind: kind,
+      };
+      if (routeIndex >= 0) list[routeIndex] = { ...list[routeIndex], ...route };
+      else list.unshift(route);
+      next.routes = list;
+      return next;
+    });
+  }
+
+  function addProviderModelMapping(provider: ProviderConfig, upstreamModel: string) {
+    setConfig((cur) => {
+      const next = cloneConfig(cur);
+      const existing = new Set((next.routes ?? [])
+        .filter((route) => route.provider === provider.name)
+        .map((route) => route.match));
+      const baseClient = upstreamModel || DEFAULT_OPENAI_CLIENT_MODEL;
+      const client = uniqueName(`${baseClient}--${providerSlug(provider)}`, existing);
+      next.routes = [
+        {
+          match: client,
+          match_type: "exact",
+          provider: provider.name,
+          rewrite_model: upstreamModel || baseClient,
+          client_kind: "openai",
+        },
+        ...(next.routes ?? []),
+      ];
+      setSelectedRoute(0);
+      setDetailTab("models");
+      return next;
+    });
+  }
+
   function updateKeyWatch(pi: number, wi: number, patch: Partial<KeyWatchConfig>) {
     const watches = [...(providers[pi].key_watch ?? [])];
     watches[wi] = { ...watches[wi], ...patch };
@@ -1586,7 +1932,7 @@ function App() {
         provider={selectedProviderConfig}
         providerCount={providers.length}
         logCount={status?.logs.length ?? 0}
-        running={!!status?.running}
+        status={status}
         onSetView={setActiveView}
         onToggleTheme={() => setDarkMode((d) => !d)}
       />
@@ -1792,14 +2138,16 @@ function App() {
                 <div className="flex flex-wrap items-center gap-3">
                   <div className={cn(
                     "flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium",
-                    status?.running ? "bg-success-soft text-success" : "bg-muted-soft text-muted"
+                    status?.running
+                      ? status.source === "external" ? "bg-accent-soft text-accent" : "bg-success-soft text-success"
+                      : "bg-muted-soft text-muted"
                   )}>
                     <Terminal size={14} />
-                    <span>{status?.running ? "Running" : "Stopped"}</span>
+                    <span>{gatewayStatusLabel(status)}</span>
                     {status?.pid && <strong className="font-bold">PID {status.pid}</strong>}
                   </div>
                   <Button variant="success" icon={<Play size={14} />} onClick={startServer} disabled={busy || status?.running}>Start</Button>
-                  <Button variant="danger" icon={<Square size={14} />} onClick={stopServer} disabled={busy || !status?.running}>Stop</Button>
+                  <Button variant="danger" icon={<Square size={14} />} onClick={stopServer} disabled={busy || !status?.managed}>Stop</Button>
                   <Button icon={<RotateCw size={14} />} onClick={restartServer} disabled={busy}>Restart</Button>
                   <Button variant="primary" icon={<Save size={14} />} onClick={saveConfig} disabled={busy}>Save</Button>
                   <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>Validate</Button>
@@ -1814,6 +2162,7 @@ function App() {
               <nav className="flex items-center gap-1 rounded-xl bg-muted-soft p-1">
                 {([
                   { tab: "settings" as DetailTab, icon: <Settings size={14} />, label: "Settings" },
+                  { tab: "models" as DetailTab, icon: <Database size={14} />, label: "Models" },
                   { tab: "routes" as DetailTab, icon: <Route size={14} />, label: "Routes" },
                   { tab: "runtime" as DetailTab, icon: <Gauge size={14} />, label: "Runtime" },
                 ]).map(({ tab, icon, label }) => (
@@ -1872,6 +2221,61 @@ function App() {
                   </motion.div>
                 )}
 
+                {detailTab === "models" && (
+                  <motion.div key="dt-models" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5">
+                    <section className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+                      <PanelHeader title="Model Mappings" subtitle="Client-visible model names are exact routes; upstream models are sent to this provider." />
+                      <div className="grid gap-4 p-5">
+                        {providerMappingRows(selectedProviderConfig, routes).map((row) => (
+                          <div key={row.kind} className="grid gap-3 rounded-xl border border-border bg-bg p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <h3 className="text-sm font-bold text-heading">{row.label}</h3>
+                                <p className="mt-1 text-xs text-muted">{row.routeIndex >= 0 ? "Custom exact route" : "Generated fallback route"}</p>
+                              </div>
+                              <span className="rounded-full bg-info-soft px-2.5 py-1 text-[11px] font-bold text-primary">{row.kind}</span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-3">
+                              <TextField label="Client model name" value={row.clientModel} onChange={(v) => updateProviderModelMapping(selectedProviderConfig, row.kind, { clientModel: v })} />
+                              <TextField label="Upstream model" value={row.upstreamModel} onChange={(v) => updateProviderModelMapping(selectedProviderConfig, row.kind, { upstreamModel: v })} />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+
+                    <section className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+                        <div>
+                          <h2 className="text-sm font-bold text-heading">Available Models</h2>
+                          <p className="mt-1 text-xs text-muted">Fetched from the provider model endpoint when available.</p>
+                        </div>
+                        <Button icon={<RefreshCw size={14} />} onClick={() => void fetchProviderModels(selectedProviderConfig)} disabled={modelProbeBusy}>
+                          {modelProbeBusy ? "Loading" : "Fetch models"}
+                        </Button>
+                      </div>
+                      <div className="max-h-80 overflow-auto p-4">
+                        {(providerModelCatalog[selectedProviderConfig.name] ?? []).length ? (
+                          <div className="grid gap-2">
+                            {(providerModelCatalog[selectedProviderConfig.name] ?? []).map((model) => (
+                              <div key={model} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg px-3 py-2">
+                                <span className="min-w-0 truncate font-mono text-xs text-fg">{model}</span>
+                                <div className="flex shrink-0 gap-2">
+                                  <Button icon={<Route size={13} />} onClick={() => updateProviderModelMapping(selectedProviderConfig, "claude", { upstreamModel: model })}>Use for Claude</Button>
+                                  <Button icon={<Route size={13} />} onClick={() => updateProviderModelMapping(selectedProviderConfig, "openai", { upstreamModel: model })}>Use for Codex</Button>
+                                  <Button icon={<Plus size={13} />} onClick={() => addProviderModelMapping(selectedProviderConfig, model)}>Add alias</Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <EmptyState compact title="No models loaded" action="Fetch models" onAction={() => void fetchProviderModels(selectedProviderConfig)} />
+                        )}
+                      </div>
+                    </section>
+                  </motion.div>
+                )}
+
                 {detailTab === "routes" && (
                   <motion.div key="dt-routes" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid grid-cols-[minmax(300px,1fr)_minmax(280px,0.6fr)] gap-5 items-start">
                     {/* Routes list */}
@@ -1916,6 +2320,7 @@ function App() {
                               <SelectField label="Provider" value={selectedRouteConfig.provider} options={providerNames} onChange={(v) => updateRoute(selectedRoute, { provider: v })} />
                               <TextField label="Rewrite model" value={selectedRouteConfig.rewrite_model ?? ""} onChange={(v) => updateRoute(selectedRoute, { rewrite_model: v || undefined })} />
                             </div>
+                            <SelectField label="Client kind" value={selectedRouteConfig.client_kind ?? ""} options={["", "claude", "openai"]} onChange={(v) => updateRoute(selectedRoute, { client_kind: (v || undefined) as "claude" | "openai" | undefined })} />
                             <TextField label="Fallback providers CSV" value={(selectedRouteConfig.fallback_providers ?? []).join(", ")} onChange={(v) => updateRoute(selectedRoute, { fallback_providers: splitCsv(v) })} />
                             <div className="flex justify-end">
                               <Button variant="danger" icon={<Trash2 size={14} />} onClick={() => removeRoute(selectedRoute)}>Remove</Button>
@@ -1937,13 +2342,16 @@ function App() {
                         <NumberField label="Body limit MB" value={valueAsNumber(config.server?.body_limit_mb)} onChange={(v) => updateSection("server", "body_limit_mb", v)} />
                         <NumberField label="Max concurrency" optional value={valueAsNumber(config.server?.max_concurrent_requests)} onChange={(v) => updateSection("server", "max_concurrent_requests", v)} />
                         <NumberField label="Rate/minute" optional value={valueAsNumber(config.server?.rate_limit_per_minute)} onChange={(v) => updateSection("server", "rate_limit_per_minute", v)} />
-                        <SelectField label="Reasoning" value={valueAsString(config.server?.default_reasoning_effort)} options={["", "none", "low", "medium", "high", "xhigh"]} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
+                        <SelectField label="Reasoning policy" value={valueAsString(config.server?.reasoning_policy || "fill_missing")} options={["preserve", "fill_missing", "cap", "force"]} onChange={(v) => updateSection("server", "reasoning_policy", v)} />
+                        <SelectField label="Default reasoning" value={valueAsString(config.server?.default_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
+                        <SelectField label="Max reasoning" value={valueAsString(config.server?.max_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "max_reasoning_effort", v)} />
                         <NumberField label="Retry attempts" value={valueAsNumber(config.server?.retry_attempts)} onChange={(v) => updateSection("server", "retry_attempts", v)} />
                         <NumberField label="Retry backoff ms" value={valueAsNumber(config.server?.retry_backoff_ms)} onChange={(v) => updateSection("server", "retry_backoff_ms", v)} />
                         <NumberField label="Circuit failures" optional value={valueAsNumber(config.server?.circuit_breaker_failures)} onChange={(v) => updateSection("server", "circuit_breaker_failures", v)} />
                         <NumberField label="Circuit cooldown" optional value={valueAsNumber(config.server?.circuit_breaker_cooldown_secs)} onChange={(v) => updateSection("server", "circuit_breaker_cooldown_secs", v)} />
-                        <SelectField label="Log level" value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
-                        <SelectField label="Log format" value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
+                          <SelectField label="Log level" value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
+                          <SelectField label="Log format" value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
+                          <BoolField label="ANSI logs" checked={valueAsBool(config.logging?.ansi)} onChange={(v) => updateSection("logging", "ansi", v)} />
                         <BoolField label="Auth enabled" checked={valueAsBool(config.auth?.enabled)} onChange={(v) => updateSection("auth", "enabled", v)} />
                         <TextField label="API keys env" value={valueAsString(config.auth?.api_keys_env)} onChange={(v) => updateSection("auth", "api_keys_env", v)} />
                         <NumberField label="Per-key rate/minute" optional value={valueAsNumber(config.auth?.per_key_rate_limit_per_minute)} onChange={(v) => updateSection("auth", "per_key_rate_limit_per_minute", v)} />
@@ -2054,7 +2462,7 @@ function App() {
                       <div className="grid gap-3 p-5">
                         <SettingsInfoRow icon={<Terminal size={15} />} label="Executable" value={executable || "ferryllm"} />
                         <SettingsInfoRow icon={<FileCog size={15} />} label="Config path" value={status?.config_path || "Default app config"} />
-                        <SettingsInfoRow icon={<Activity size={15} />} label="Runtime" value={status?.running ? `Running, PID ${status.pid ?? "-"}` : "Stopped"} tone={status?.running ? "success" : "muted"} />
+                        <SettingsInfoRow icon={<Activity size={15} />} label="Runtime" value={gatewayStatusDetail(status)} tone={gatewayStatusTone(status)} />
                         <SettingsInfoRow icon={<Route size={15} />} label="Routes" value={`${routes.length} configured`} />
                         <SettingsInfoRow icon={<Network size={15} />} label="Providers" value={`${providers.length} configured`} />
                       </div>
@@ -2072,7 +2480,9 @@ function App() {
                         <NumberField label="Body limit MB" value={valueAsNumber(config.server?.body_limit_mb)} onChange={(v) => updateSection("server", "body_limit_mb", v)} />
                         <NumberField label="Max concurrency" optional value={valueAsNumber(config.server?.max_concurrent_requests)} onChange={(v) => updateSection("server", "max_concurrent_requests", v)} />
                         <NumberField label="Rate/minute" optional value={valueAsNumber(config.server?.rate_limit_per_minute)} onChange={(v) => updateSection("server", "rate_limit_per_minute", v)} />
-                        <SelectField label="Reasoning" value={valueAsString(config.server?.default_reasoning_effort)} options={["", "none", "low", "medium", "high", "xhigh"]} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
+                        <SelectField label="Reasoning policy" value={valueAsString(config.server?.reasoning_policy || "fill_missing")} options={["preserve", "fill_missing", "cap", "force"]} onChange={(v) => updateSection("server", "reasoning_policy", v)} />
+                        <SelectField label="Default reasoning" value={valueAsString(config.server?.default_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
+                        <SelectField label="Max reasoning" value={valueAsString(config.server?.max_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "max_reasoning_effort", v)} />
                       </div>
                     </section>
 
@@ -2090,8 +2500,9 @@ function App() {
                       <div className="rounded-lg border border-border bg-surface overflow-hidden">
                         <PanelHeader title="Logging & Metrics" subtitle="Local logs and Prometheus endpoint." />
                         <div className="grid gap-4 p-5 sm:grid-cols-2">
-                          <SelectField label="Log level" value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
-                          <SelectField label="Log format" value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
+                        <SelectField label="Log level" value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
+                        <SelectField label="Log format" value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
+                        <BoolField label="ANSI logs" checked={valueAsBool(config.logging?.ansi)} onChange={(v) => updateSection("logging", "ansi", v)} />
                           <BoolField label="Metrics enabled" checked={valueAsBool(config.metrics?.enabled, true)} onChange={(v) => updateSection("metrics", "enabled", v)} />
                           <SettingsInfoRow icon={<BarChart3 size={15} />} label="Dashboard refresh" value="3s" />
                         </div>
@@ -2249,6 +2660,7 @@ function App() {
                 onSelectWorkspace={setSelectedWorkspacePath}
                 onSetWorkspaceSearch={setWorkspaceSearch}
                 onSetWorkspaceGateway={updateWorkspaceGateway}
+                onSetWorkspaceReasoning={updateWorkspaceReasoning}
                 onTogglePin={toggleWorkspacePin}
               />
             </motion.div>
@@ -2268,7 +2680,7 @@ function AppSidebar({
   provider,
   providerCount,
   logCount,
-  running,
+  status,
   onSetView,
   onToggleTheme,
 }: {
@@ -2277,7 +2689,7 @@ function AppSidebar({
   provider: ProviderConfig | undefined;
   providerCount: number;
   logCount: number;
-  running: boolean;
+  status: ProcessStatus | null;
   onSetView: (view: View) => void;
   onToggleTheme: () => void;
 }) {
@@ -2316,7 +2728,7 @@ function AppSidebar({
       </nav>
 
       <div className="mt-auto grid gap-2 border-t border-border p-4">
-        <SettingsInfoRow icon={<Activity size={15} />} label="Gateway" value={running ? "Running" : "Stopped"} tone={running ? "success" : "warning"} />
+        <SettingsInfoRow icon={<Activity size={15} />} label="Gateway" value={gatewayStatusLabel(status)} tone={gatewayStatusTone(status)} />
         <SettingsInfoRow icon={<Network size={15} />} label="Provider" value={provider?.name || "Not selected"} tone={provider ? "success" : "warning"} />
         <button
           type="button"
@@ -2357,6 +2769,7 @@ function LauncherView({
   onSelectWorkspace,
   onSetWorkspaceSearch,
   onSetWorkspaceGateway,
+  onSetWorkspaceReasoning,
   onTogglePin,
 }: {
   aiSessions: AISession[];
@@ -2384,6 +2797,7 @@ function LauncherView({
   onSelectWorkspace: (path: string) => void;
   onSetWorkspaceSearch: (value: string) => void;
   onSetWorkspaceGateway: (path: string, providerName: string) => void;
+  onSetWorkspaceReasoning: (path: string, reasoningEffort: string) => void;
   onTogglePin: (path: string) => void;
 }) {
   const hasWorkspaces = filteredWorkspaces.length > 0;
@@ -2437,6 +2851,7 @@ function LauncherView({
                   onLaunchVscode={(workspace) => onLaunchWorkspace(workspace, "vscode", launchTool)}
                   onReveal={onRevealWorkspace}
                   onSetGateway={onSetWorkspaceGateway}
+                  onSetReasoning={onSetWorkspaceReasoning}
                   onTogglePin={onTogglePin}
                   onDelete={onDeleteWorkspace}
                   onDeleteDirectory={onDeleteWorkspaceDirectory}
@@ -2456,6 +2871,7 @@ function LauncherView({
                 onLaunchVscode={(workspace) => onLaunchWorkspace(workspace, "vscode", launchTool)}
                 onReveal={onRevealWorkspace}
                 onSetGateway={onSetWorkspaceGateway}
+                onSetReasoning={onSetWorkspaceReasoning}
                 onTogglePin={onTogglePin}
                 onDelete={onDeleteWorkspace}
                 onDeleteDirectory={onDeleteWorkspaceDirectory}
@@ -2566,7 +2982,7 @@ function LauncherSessionPanel({ nativeSessions, launchHistory, scanning, onDelet
   );
 }
 
-function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessions, providers, onSelect, onLaunch, onLaunchCodex, onLaunchClaude, onLaunchOpenCode, onLaunchVscode, onReveal, onSetGateway, onTogglePin, onDelete, onDeleteDirectory, emptyText }: {
+function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessions, providers, onSelect, onLaunch, onLaunchCodex, onLaunchClaude, onLaunchOpenCode, onLaunchVscode, onReveal, onSetGateway, onSetReasoning, onTogglePin, onDelete, onDeleteDirectory, emptyText }: {
   title: string;
   workspaces: WorkspaceEntry[];
   selectedPath?: string;
@@ -2580,6 +2996,7 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
   onLaunchVscode: (workspace: WorkspaceEntry) => void;
   onReveal: (path: string) => void;
   onSetGateway: (path: string, providerName: string) => void;
+  onSetReasoning: (path: string, reasoningEffort: string) => void;
   onTogglePin: (path: string) => void;
   onDelete: (path: string) => void;
   onDeleteDirectory: (path: string) => void;
@@ -2649,6 +3066,21 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
                   <option value="" disabled>Gateway</option>
                   {providers.map((provider) => (
                     <option key={provider.name} value={provider.name}>{provider.name}</option>
+                  ))}
+                </select>
+                <select
+                  className="launcher-gateway-select"
+                  value={workspace.defaultReasoningEffort ?? ""}
+                  title="Project reasoning"
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onSetReasoning(workspace.path, event.currentTarget.value);
+                  }}
+                >
+                  <option value="">Reasoning</option>
+                  {REASONING_OPTIONS.filter(Boolean).map((effort) => (
+                    <option key={effort} value={effort}>{effort}</option>
                   ))}
                 </select>
                 <IconAction title="Open project" icon={<Play size={13} />} onClick={(event) => { event.stopPropagation(); onLaunch(workspace); }} />
@@ -2737,7 +3169,7 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ProbeBadge label={status?.running ? "Running" : "Stopped"} ok={!!status?.running} />
+          <ProbeBadge label={gatewayStatusLabel(status)} ok={!!status?.running} />
           <ProbeBadge label="Health" ok={snapshot ? !!snapshot.health.ok : null} detail={snapshot?.health.status ? String(snapshot.health.status) : undefined} />
           <ProbeBadge label="Ready" ok={snapshot ? !!snapshot.ready.ok : null} detail={snapshot?.ready.status ? String(snapshot.ready.status) : undefined} />
           <button
@@ -2840,7 +3272,7 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
           </div>
 
           <div className="rounded-lg border border-border bg-surface">
-            <PanelHeader title="Recent Logs" subtitle={status?.pid ? `PID ${status.pid}` : status?.running ? "Running" : "Process is stopped"} />
+            <PanelHeader title="Recent Logs" subtitle={gatewayStatusDetail(status)} />
             <div className="max-h-72 overflow-auto p-3">
               {recentLogs.length ? recentLogs.map((entry) => (
                 <div key={`${entry.ts_ms}-${entry.stream}-${entry.line}`} className="grid grid-cols-[76px_64px_1fr] gap-2 border-b border-border/60 py-2 text-xs last:border-0">

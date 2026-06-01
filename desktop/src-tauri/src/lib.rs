@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     env, fs,
     io::{BufRead, BufReader, Read, Write},
     net::TcpStream,
@@ -43,6 +43,8 @@ struct ConfigDocument {
 #[derive(Debug, Clone, Serialize)]
 struct ProcessStatus {
     running: bool,
+    managed: bool,
+    source: String,
     executable: String,
     config_path: String,
     pid: Option<u32>,
@@ -115,6 +117,10 @@ struct LaunchRequest {
     listen: String,
     #[serde(default = "default_tool")]
     tool: String,
+    #[serde(default)]
+    client_model: Option<String>,
+    #[serde(default)]
+    client_reasoning_effort: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -123,6 +129,10 @@ struct ResumeSessionRequest {
     cwd: String,
     listen: String,
     tool: String,
+    #[serde(default)]
+    client_model: Option<String>,
+    #[serde(default)]
+    client_reasoning_effort: Option<String>,
 }
 
 fn default_tool() -> String {
@@ -141,21 +151,74 @@ fn claude_setting_sources_arg() -> &'static str {
     "project,local"
 }
 
-fn launch_args(tool: &str) -> Vec<String> {
+fn launch_args(
+    tool: &str,
+    client_model: Option<&str>,
+    client_reasoning_effort: Option<&str>,
+) -> Vec<String> {
     match tool {
         "claude" => vec![
             "--setting-sources".into(),
             claude_setting_sources_arg().into(),
             "--model".into(),
-            "claude-sonnet-4-5".into(),
+            normalized_client_model(tool, client_model),
         ],
+        "codex" => {
+            let mut args = vec!["--model".into(), normalized_client_model(tool, client_model)];
+            if let Some(effort) = normalized_reasoning_effort(client_reasoning_effort) {
+                args.push("-c".into());
+                args.push(format!("model_reasoning_effort={effort}"));
+            }
+            args
+        }
         _ => Vec::new(),
+    }
+}
+
+fn normalized_client_model(tool: &str, client_model: Option<&str>) -> String {
+    client_model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| default_client_model(tool))
+        .to_string()
+}
+
+fn default_client_model(tool: &str) -> &'static str {
+    match tool {
+        "claude" => "claude-sonnet-4-5",
+        _ => "gpt-5.4",
+    }
+}
+
+fn normalized_reasoning_effort(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+}
+
+fn claude_thinking_tokens(value: Option<&str>) -> Option<u32> {
+    match value?.trim() {
+        "none" => Some(0),
+        "minimal" => Some(512),
+        "low" => Some(1024),
+        "medium" => Some(4096),
+        "high" => Some(8192),
+        "xhigh" => Some(16384),
+        "max" => Some(32768),
+        "ultracode" => Some(65536),
+        _ => None,
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct SyncConfigRequest {
     config: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct LauncherStateRequest {
+    state: serde_json::Value,
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +239,8 @@ struct ProviderProbeRequest {
     api_key_env: Option<String>,
     #[serde(default)]
     api_key_file: Option<String>,
+    #[serde(default)]
+    api_key_url: Option<String>,
     mode: String,
 }
 
@@ -209,12 +274,27 @@ async fn save_config_to_default(request: SyncConfigRequest) -> Result<(), String
 }
 
 #[tauri::command]
-async fn load_config_from_default() -> Result<Option<String>, String> {
+async fn save_launcher_state(request: LauncherStateRequest) -> Result<(), String> {
+    spawn_blocking_result(move || {
+        let dir = dirs::config_dir()
+            .ok_or("cannot find config directory")?
+            .join("ferryllm");
+        fs::create_dir_all(&dir).map_err(string_error)?;
+        let path = dir.join("launcher.json");
+        let json = serde_json::to_string_pretty(&request.state).map_err(string_error)?;
+        fs::write(&path, json).map_err(string_error)?;
+        Ok(())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn load_launcher_state() -> Result<Option<String>, String> {
     spawn_blocking_result(move || {
         let path = dirs::config_dir()
             .ok_or("cannot find config directory")?
             .join("ferryllm")
-            .join("config.json");
+            .join("launcher.json");
         if path.exists() {
             let content = fs::read_to_string(&path).map_err(string_error)?;
             Ok(Some(content))
@@ -225,10 +305,109 @@ async fn load_config_from_default() -> Result<Option<String>, String> {
     .await
 }
 
+#[tauri::command]
+async fn load_config_from_default() -> Result<Option<String>, String> {
+    spawn_blocking_result(move || {
+        let json_path = dirs::config_dir()
+            .ok_or("cannot find config directory")?
+            .join("ferryllm")
+            .join("config.json");
+        if json_path.exists() {
+            let content = fs::read_to_string(&json_path).map_err(string_error)?;
+            let mut value: serde_json::Value =
+                serde_json::from_str(&content).map_err(string_error)?;
+            merge_runtime_key_sources(&mut value);
+            Ok(Some(serde_json::to_string(&value).map_err(string_error)?))
+        } else {
+            let toml_path = default_config_toml_path()?;
+            if !toml_path.exists() {
+                return Ok(None);
+            }
+            let raw = fs::read_to_string(&toml_path).map_err(string_error)?;
+            let value: toml::Value = toml::from_str(&raw).map_err(string_error)?;
+            let json = serde_json::to_value(value).map_err(string_error)?;
+            Ok(Some(serde_json::to_string(&json).map_err(string_error)?))
+        }
+    })
+    .await
+}
+
+fn merge_runtime_key_sources(draft: &mut serde_json::Value) {
+    let Ok(toml_path) = default_config_toml_path() else {
+        return;
+    };
+    if !toml_path.exists() {
+        return;
+    }
+    let Ok(raw) = fs::read_to_string(&toml_path) else {
+        return;
+    };
+    let Ok(runtime_toml) = toml::from_str::<toml::Value>(&raw) else {
+        return;
+    };
+    let Ok(runtime) = serde_json::to_value(runtime_toml) else {
+        return;
+    };
+    let Some(draft_providers) = draft
+        .get_mut("providers")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+    let Some(runtime_providers) = runtime.get("providers").and_then(|value| value.as_array())
+    else {
+        return;
+    };
+    for draft_provider in draft_providers {
+        if provider_has_key_source(draft_provider) {
+            continue;
+        }
+        let Some(name) = draft_provider.get("name").and_then(|value| value.as_str()) else {
+            continue;
+        };
+        let Some(runtime_provider) = runtime_providers
+            .iter()
+            .find(|provider| provider.get("name").and_then(|value| value.as_str()) == Some(name))
+        else {
+            continue;
+        };
+        for key in [
+            "api_key",
+            "api_key_env",
+            "api_key_url",
+            "api_key_file",
+            "key_watch",
+        ] {
+            if let Some(value) = runtime_provider.get(key) {
+                draft_provider[key] = value.clone();
+            }
+        }
+    }
+}
+
+fn provider_has_key_source(provider: &serde_json::Value) -> bool {
+    ["api_key", "api_key_env", "api_key_url", "api_key_file"]
+        .iter()
+        .any(|key| provider.get(*key).is_some_and(json_value_is_present))
+        || provider.get("key_watch").is_some_and(json_value_is_present)
+}
+
+fn json_value_is_present(value: &serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::Null => false,
+        serde_json::Value::String(value) => !value.trim().is_empty(),
+        serde_json::Value::Array(value) => !value.is_empty(),
+        serde_json::Value::Object(value) => !value.is_empty(),
+        _ => true,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct ServerRequest {
     executable: Option<String>,
     config_path: String,
+    #[serde(default)]
+    replace_existing: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -254,7 +433,10 @@ async fn delete_workspace(request: WorkspacePathRequest) -> Result<(), String> {
             return Ok(());
         }
         if !path.is_dir() {
-            return Err(format!("workspace is not a directory: {}", path_to_string(&path)));
+            return Err(format!(
+                "workspace is not a directory: {}",
+                path_to_string(&path)
+            ));
         }
         fs::remove_dir_all(&path).map_err(string_error)?;
         Ok(())
@@ -270,7 +452,10 @@ async fn delete_ai_session(request: WorkspacePathRequest) -> Result<(), String> 
             return Ok(());
         }
         if !path.is_file() {
-            return Err(format!("session path is not a file: {}", path_to_string(&path)));
+            return Err(format!(
+                "session path is not a file: {}",
+                path_to_string(&path)
+            ));
         }
         fs::remove_file(&path).map_err(string_error)?;
         Ok(())
@@ -286,7 +471,10 @@ async fn reveal_workspace(request: WorkspacePathRequest) -> Result<(), String> {
 fn reveal_workspace_inner(request: WorkspacePathRequest) -> Result<(), String> {
     let path = PathBuf::from(request.path);
     if !path.exists() {
-        return Err(format!("workspace does not exist: {}", path_to_string(&path)));
+        return Err(format!(
+            "workspace does not exist: {}",
+            path_to_string(&path)
+        ));
     }
 
     #[cfg(windows)]
@@ -319,9 +507,18 @@ async fn launch_cli(request: LaunchRequest) -> Result<(), String> {
 }
 
 fn launch_cli_inner(request: LaunchRequest) -> Result<(), String> {
-    let env = client_gateway_env(&request.listen, &request.tool);
+    let env = client_gateway_env(
+        &request.listen,
+        &request.tool,
+        request.client_model.as_deref(),
+        request.client_reasoning_effort.as_deref(),
+    );
     let cli_cmd = cli_command(&request.tool);
-    let args = launch_args(&request.tool);
+    let args = launch_args(
+        &request.tool,
+        request.client_model.as_deref(),
+        request.client_reasoning_effort.as_deref(),
+    );
 
     #[cfg(windows)]
     {
@@ -374,19 +571,38 @@ fn scan_ai_sessions_inner() -> Result<Vec<AiSession>, String> {
 }
 
 fn resume_ai_session_inner(request: ResumeSessionRequest) -> Result<(), String> {
-    let env = client_gateway_env(&request.listen, &request.tool);
+    let env = client_gateway_env(
+        &request.listen,
+        &request.tool,
+        request.client_model.as_deref(),
+        request.client_reasoning_effort.as_deref(),
+    );
     let cli_cmd = cli_command(&request.tool);
-    let args: Vec<String> = if request.tool == "claude" {
-        vec![
+    let args: Vec<String> = match request.tool.as_str() {
+        "claude" => vec![
             "--setting-sources".into(),
             claude_setting_sources_arg().into(),
             "--model".into(),
-            "claude-sonnet-4-5".into(),
+            normalized_client_model(&request.tool, request.client_model.as_deref()),
             "--resume".into(),
             request.id.clone(),
-        ]
-    } else {
-        vec!["resume".into(), request.id.clone()]
+        ],
+        "codex" => {
+            let mut args = vec![
+                "--model".into(),
+                normalized_client_model(&request.tool, request.client_model.as_deref()),
+            ];
+            if let Some(effort) =
+                normalized_reasoning_effort(request.client_reasoning_effort.as_deref())
+            {
+                args.push("-c".into());
+                args.push(format!("model_reasoning_effort={effort}"));
+            }
+            args.push("resume".into());
+            args.push(request.id.clone());
+            args
+        }
+        _ => vec!["resume".into(), request.id.clone()],
     };
 
     #[cfg(windows)]
@@ -438,16 +654,26 @@ fn windows_cmd_quote_arg(arg: &str) -> String {
 
 fn collect_codex_sessions(root: &Path, sessions: &mut Vec<AiSession>) {
     for path in jsonl_files(root, 800) {
-        let Ok(file) = fs::File::open(&path) else { continue };
+        let Ok(file) = fs::File::open(&path) else {
+            continue;
+        };
         let mut reader = BufReader::new(file);
         let mut line = String::new();
         if reader.read_line(&mut line).is_err() || line.trim().is_empty() {
             continue;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
-        let Some(payload) = value.get("payload") else { continue };
-        let Some(id) = payload.get("id").and_then(|v| v.as_str()) else { continue };
-        let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
+        let Some(payload) = value.get("payload") else {
+            continue;
+        };
+        let Some(id) = payload.get("id").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(cwd) = payload.get("cwd").and_then(|v| v.as_str()) else {
+            continue;
+        };
         let (preview, message_count) = scan_session_preview(&mut reader, "codex", 220);
         sessions.push(AiSession {
             id: id.to_string(),
@@ -464,13 +690,17 @@ fn collect_codex_sessions(root: &Path, sessions: &mut Vec<AiSession>) {
 
 fn collect_claude_sessions(root: &Path, sessions: &mut Vec<AiSession>) {
     for path in jsonl_files(root, 800) {
-        let Ok(file) = fs::File::open(&path) else { continue };
+        let Ok(file) = fs::File::open(&path) else {
+            continue;
+        };
         let reader = BufReader::new(file);
         let mut found: Option<AiSession> = None;
         let mut preview = String::new();
         let mut message_count = 0usize;
         for line in reader.lines().map_while(Result::ok).take(40) {
-            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+            let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+                continue;
+            };
             let (line_preview, line_message_count) = session_preview_from_value(&value, "claude");
             message_count += line_message_count;
             if preview.is_empty() {
@@ -501,17 +731,25 @@ fn collect_claude_sessions(root: &Path, sessions: &mut Vec<AiSession>) {
     }
 }
 
-fn scan_session_preview<R: BufRead>(reader: &mut R, tool: &str, max_lines: usize) -> (String, usize) {
+fn scan_session_preview<R: BufRead>(
+    reader: &mut R,
+    tool: &str,
+    max_lines: usize,
+) -> (String, usize) {
     let mut preview = String::new();
     let mut message_count = 0usize;
     let mut line = String::new();
     for _ in 0..max_lines {
         line.clear();
-        let Ok(bytes) = reader.read_line(&mut line) else { break };
+        let Ok(bytes) = reader.read_line(&mut line) else {
+            break;
+        };
         if bytes == 0 {
             break;
         }
-        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else { continue };
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(&line) else {
+            continue;
+        };
         let (line_preview, line_message_count) = session_preview_from_value(&value, tool);
         message_count += line_message_count;
         if preview.is_empty() {
@@ -529,10 +767,19 @@ fn session_preview_from_value(value: &serde_json::Value, tool: &str) -> (String,
 }
 
 fn codex_preview_from_value(value: &serde_json::Value) -> (String, usize) {
-    let Some(payload) = value.get("payload") else { return (String::new(), 0) };
-    let payload_type = payload.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-    let role = payload.get("role").and_then(|v| v.as_str()).unwrap_or_default();
-    let is_user = role == "user" || payload_type == "user_message" || payload_type == "input_message";
+    let Some(payload) = value.get("payload") else {
+        return (String::new(), 0);
+    };
+    let payload_type = payload
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let role = payload
+        .get("role")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let is_user =
+        role == "user" || payload_type == "user_message" || payload_type == "input_message";
     let is_event = value.get("type").and_then(|v| v.as_str()) == Some("event_msg");
     let count = usize::from(is_user || (is_event && payload.get("message").is_some()));
 
@@ -552,7 +799,10 @@ fn codex_preview_from_value(value: &serde_json::Value) -> (String, usize) {
 }
 
 fn claude_preview_from_value(value: &serde_json::Value) -> (String, usize) {
-    let value_type = value.get("type").and_then(|v| v.as_str()).unwrap_or_default();
+    let value_type = value
+        .get("type")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
     let message = value.get("message");
     let role = message
         .and_then(|v| v.get("role"))
@@ -622,7 +872,9 @@ fn collect_jsonl_files(dir: &Path, files: &mut Vec<PathBuf>, limit: usize) {
     if files.len() >= limit || !dir.exists() {
         return;
     }
-    let Ok(entries) = fs::read_dir(dir) else { return };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         if files.len() >= limit {
             return;
@@ -654,7 +906,12 @@ fn session_title_from_path(path: &Path, id: &str) -> String {
 }
 
 fn launch_vscode_inner(request: LaunchRequest) -> Result<(), String> {
-    let env = client_gateway_env(&request.listen, &request.tool);
+    let env = client_gateway_env(
+        &request.listen,
+        &request.tool,
+        request.client_model.as_deref(),
+        request.client_reasoning_effort.as_deref(),
+    );
 
     // Try common VS Code locations on Windows
     #[cfg(windows)]
@@ -693,26 +950,90 @@ fn launch_vscode_inner(request: LaunchRequest) -> Result<(), String> {
     }
 }
 
-fn client_gateway_env(listen: &str, tool: &str) -> Vec<(&'static str, String)> {
+fn client_gateway_env(
+    listen: &str,
+    tool: &str,
+    client_model: Option<&str>,
+    client_reasoning_effort: Option<&str>,
+) -> Vec<(&'static str, String)> {
     let host = if listen.starts_with("0.0.0.0") {
         listen.replace("0.0.0.0", "127.0.0.1")
     } else {
         listen.to_string()
     };
+    let model = normalized_client_model(tool, client_model);
     match tool {
-        "claude" => vec![
+        "claude" => {
+            let mut env = vec![
             ("ANTHROPIC_API_KEY", "ferryllm".into()),
             ("ANTHROPIC_BASE_URL", format!("http://{}", host)),
-            ("ANTHROPIC_MODEL", "claude-sonnet-4-5".into()),
-            ("ANTHROPIC_DEFAULT_HAIKU_MODEL", "claude-3-5-haiku-latest".into()),
-            ("ANTHROPIC_DEFAULT_SONNET_MODEL", "claude-sonnet-4-5".into()),
+            ("ANTHROPIC_MODEL", model.clone()),
+            (
+                "ANTHROPIC_DEFAULT_HAIKU_MODEL",
+                "claude-3-5-haiku-latest".into(),
+            ),
+            ("ANTHROPIC_DEFAULT_SONNET_MODEL", model),
             ("ANTHROPIC_DEFAULT_OPUS_MODEL", "claude-opus-4-1".into()),
+            ];
+            if let Some(tokens) = claude_thinking_tokens(client_reasoning_effort) {
+                env.push(("MAX_THINKING_TOKENS", tokens.to_string()));
+            }
+            env
+        }
+        "opencode" => vec![
+            ("OPENAI_API_KEY", "ferryllm".into()),
+            ("OPENAI_BASE_URL", format!("http://{}/v1", host)),
+            (
+                "OPENCODE_CONFIG_CONTENT",
+                opencode_gateway_config(&host, &model),
+            ),
         ],
         _ => vec![
             ("OPENAI_API_KEY", "ferryllm".into()),
             ("OPENAI_BASE_URL", format!("http://{}/v1", host)),
         ],
     }
+}
+
+fn opencode_gateway_config(host: &str, model: &str) -> String {
+    let model_limit = serde_json::json!({
+        "limit": { "context": 200000, "output": 8192 }
+    });
+    let mut models = serde_json::Map::new();
+    models.insert(
+        model.to_string(),
+        serde_json::json!({
+            "name": format!("{} via ferryllm", model),
+            "limit": { "context": 200000, "output": 8192 }
+        }),
+    );
+    for (id, name) in [
+        ("claude-sonnet-4-5", "Claude Sonnet 4.5 via ferryllm"),
+        ("gpt-5.4", "GPT 5.4 via ferryllm"),
+        ("gpt-5.5", "GPT 5.5 via ferryllm"),
+    ] {
+        models
+            .entry(id.to_string())
+            .or_insert_with(|| serde_json::json!({ "name": name, "limit": model_limit["limit"].clone() }));
+    }
+    serde_json::json!({
+        "$schema": "https://opencode.ai/config.json",
+        "enabled_providers": ["ferryllm"],
+        "provider": {
+            "ferryllm": {
+                "npm": "@ai-sdk/openai-compatible",
+                "name": "ferryllm",
+                "options": {
+                    "baseURL": format!("http://{}/v1", host),
+                    "apiKey": "ferryllm"
+                },
+                "models": models
+            }
+        },
+        "model": format!("ferryllm/{model}"),
+        "small_model": format!("ferryllm/{model}")
+    })
+    .to_string()
 }
 
 fn apply_client_env(command: &mut Command, env: &[(&'static str, String)]) {
@@ -723,10 +1044,14 @@ fn apply_client_env(command: &mut Command, env: &[(&'static str, String)]) {
     command.env_remove("ANTHROPIC_DEFAULT_HAIKU_MODEL");
     command.env_remove("ANTHROPIC_DEFAULT_SONNET_MODEL");
     command.env_remove("ANTHROPIC_DEFAULT_OPUS_MODEL");
+    command.env_remove("MAX_THINKING_TOKENS");
     command.env_remove("CLAUDE_CODE_USE_BEDROCK");
     command.env_remove("CLAUDE_CODE_USE_VERTEX");
     command.env_remove("OPENAI_API_KEY");
     command.env_remove("OPENAI_BASE_URL");
+    command.env_remove("OPENCODE_CONFIG");
+    command.env_remove("OPENCODE_CONFIG_CONTENT");
+    command.env_remove("OPENCODE_MODEL");
     for (key, value) in env {
         command.env(key, value);
     }
@@ -827,7 +1152,7 @@ async fn save_config_file(
             write_config_atomically(&path, &config)?;
 
             if request.hot_reload && is_running(&runtime) {
-                restart_with(&app, &runtime, executable, path_to_string(&path))?;
+                restart_with(&app, &runtime, executable, path_to_string(&path), false)?;
                 reloaded = true;
             }
         }
@@ -893,6 +1218,7 @@ async fn start_server(
             &runtime,
             normalized_executable(request.executable.as_deref()),
             request.config_path,
+            request.replace_existing,
         )?;
         status_inner(&runtime)
     })
@@ -922,6 +1248,7 @@ async fn restart_server(
             &runtime,
             normalized_executable(request.executable.as_deref()),
             request.config_path,
+            true,
         )?;
         status_inner(&runtime)
     })
@@ -965,11 +1292,30 @@ fn start_with(
     runtime: &Arc<Mutex<RuntimeState>>,
     executable: String,
     config_path: String,
+    replace_existing: bool,
 ) -> Result<(), String> {
-    let mut runtime_state = runtime.lock().map_err(lock_error)?;
-    reap_if_exited(&mut runtime_state);
-    if runtime_state.child.is_some() {
-        return Err("ferryllm is already running".into());
+    {
+        let mut runtime_state = runtime.lock().map_err(lock_error)?;
+        reap_if_exited(&mut runtime_state);
+        if runtime_state.child.is_some() {
+            return Err("ferryllm is already running".into());
+        }
+    }
+
+    if gateway_health_ok_for_config(&config_path) {
+        if replace_existing {
+            stop_external_gateways_for_config(&config_path)?;
+        } else {
+            let mut runtime_state = runtime.lock().map_err(lock_error)?;
+            runtime_state.executable = executable;
+            runtime_state.config_path = config_path.clone();
+            push_log(
+                &mut runtime_state,
+                "system",
+                format!("detected existing ferryllm on {}", listen_for_config_path(&config_path)),
+            );
+            return Ok(());
+        }
     }
 
     let mut child = Command::new(&executable)
@@ -988,6 +1334,7 @@ fn start_with(
         spawn_log_reader(app.clone(), "stderr", stderr);
     }
 
+    let mut runtime_state = runtime.lock().map_err(lock_error)?;
     push_log(
         &mut runtime_state,
         "system",
@@ -1014,21 +1361,43 @@ fn restart_with(
     runtime: &Arc<Mutex<RuntimeState>>,
     executable: String,
     config_path: String,
+    replace_existing: bool,
 ) -> Result<(), String> {
     stop_inner(runtime)?;
-    start_with(app, runtime, executable, config_path)
+    start_with(app, runtime, executable, config_path, replace_existing)
 }
 
 fn status_inner(runtime: &Arc<Mutex<RuntimeState>>) -> Result<ProcessStatus, String> {
-    let mut runtime_state = runtime.lock().map_err(lock_error)?;
-    reap_if_exited(&mut runtime_state);
-    let pid = runtime_state.child.as_ref().map(Child::id);
+    let (managed, pid, executable, config_path, logs) = {
+        let mut runtime_state = runtime.lock().map_err(lock_error)?;
+        reap_if_exited(&mut runtime_state);
+        let pid = runtime_state.child.as_ref().map(Child::id);
+        let managed = runtime_state.child.is_some();
+        let config_path = effective_config_path(&runtime_state.config_path);
+        (
+            managed,
+            pid,
+            runtime_state.executable.clone(),
+            config_path,
+            runtime_state.logs.iter().cloned().collect(),
+        )
+    };
+    let external = !managed && gateway_health_ok_for_config(&config_path);
+    let source = if managed {
+        "managed"
+    } else if external {
+        "external"
+    } else {
+        "stopped"
+    };
     Ok(ProcessStatus {
-        running: runtime_state.child.is_some(),
-        executable: runtime_state.executable.clone(),
-        config_path: runtime_state.config_path.clone(),
+        running: managed || external,
+        managed,
+        source: source.into(),
+        executable,
+        config_path,
         pid,
-        logs: runtime_state.logs.iter().cloned().collect(),
+        logs,
     })
 }
 
@@ -1067,15 +1436,31 @@ fn validate_config_value_with(
 }
 
 fn normalize_runtime_config(mut config: serde_json::Value) -> serde_json::Value {
-    if let Some(providers) = config.get_mut("providers").and_then(|value| value.as_array_mut()) {
+    if let Some(providers) = config
+        .get_mut("providers")
+        .and_then(|value| value.as_array_mut())
+    {
         for provider in providers {
-            if let Some(base_url) = provider.get_mut("base_url").and_then(|value| value.as_str()) {
+            if let Some(base_url) = provider
+                .get_mut("base_url")
+                .and_then(|value| value.as_str())
+            {
                 let trimmed = base_url.trim_end_matches('/').to_string();
                 if trimmed != base_url {
                     if let Some(object) = provider.as_object_mut() {
                         object.insert("base_url".into(), serde_json::Value::String(trimmed));
                     }
                 }
+            }
+        }
+    }
+
+    prune_unavailable_env_providers(&mut config);
+
+    if let Some(routes) = config.get_mut("routes").and_then(|value| value.as_array_mut()) {
+        for route in routes {
+            if let Some(object) = route.as_object_mut() {
+                object.remove("client_kind");
             }
         }
     }
@@ -1126,6 +1511,81 @@ fn normalize_runtime_config(mut config: serde_json::Value) -> serde_json::Value 
     config
 }
 
+fn prune_unavailable_env_providers(config: &mut serde_json::Value) {
+    let Some(providers) = config
+        .get_mut("providers")
+        .and_then(|value| value.as_array_mut())
+    else {
+        return;
+    };
+
+    let mut kept_names = HashSet::new();
+    providers.retain(|provider| {
+        let name = provider
+            .get("name")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .to_string();
+        let keep = provider_env_key_available(provider);
+        if keep && !name.is_empty() {
+            kept_names.insert(name);
+        }
+        keep
+    });
+
+    if let Some(routes) = config.get_mut("routes").and_then(|value| value.as_array_mut()) {
+        routes.retain_mut(|route| {
+            let Some(object) = route.as_object_mut() else {
+                return false;
+            };
+            let provider_ok = object
+                .get("provider")
+                .and_then(|value| value.as_str())
+                .is_some_and(|provider| kept_names.contains(provider));
+            if !provider_ok {
+                return false;
+            }
+            if let Some(fallbacks) = object
+                .get_mut("fallback_providers")
+                .and_then(|value| value.as_array_mut())
+            {
+                fallbacks.retain(|fallback| {
+                    fallback
+                        .as_str()
+                        .is_some_and(|provider| kept_names.contains(provider))
+                });
+            }
+            true
+        });
+    }
+}
+
+fn provider_env_key_available(provider: &serde_json::Value) -> bool {
+    let Some(env) = provider.get("api_key_env").and_then(|value| value.as_str()) else {
+        return true;
+    };
+    let env = env.trim();
+    if env.is_empty() {
+        return false;
+    }
+    if provider
+        .get("api_key")
+        .is_some_and(json_value_is_present)
+        || provider
+            .get("api_key_url")
+            .is_some_and(json_value_is_present)
+        || provider
+            .get("api_key_file")
+            .is_some_and(json_value_is_present)
+        || provider.get("key_watch").is_some_and(json_value_is_present)
+    {
+        return true;
+    }
+    std::env::var(env)
+        .map(|value| !value.trim().is_empty())
+        .unwrap_or(false)
+}
+
 fn is_running(runtime: &Arc<Mutex<RuntimeState>>) -> bool {
     runtime
         .lock()
@@ -1146,7 +1606,7 @@ where
             let entry = LogEntry {
                 ts_ms: unix_ms(),
                 stream: stream.to_string(),
-                line,
+                line: strip_ansi(&line),
             };
             if let Some(state) = app.try_state::<DesktopState>() {
                 if let Ok(mut runtime) = state.runtime.lock() {
@@ -1159,14 +1619,33 @@ where
 }
 
 fn push_log(runtime: &mut RuntimeState, stream: &str, line: impl Into<String>) {
+    let line = line.into();
     push_entry(
         runtime,
         LogEntry {
             ts_ms: unix_ms(),
             stream: stream.to_string(),
-            line: line.into(),
+            line: strip_ansi(&line),
         },
     );
+}
+
+fn strip_ansi(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    let mut chars = value.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for next in chars.by_ref() {
+                if ('@'..='~').contains(&next) {
+                    break;
+                }
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 fn push_entry(runtime: &mut RuntimeState, entry: LogEntry) {
@@ -1306,6 +1785,172 @@ fn wait_for_exit(child: &mut Child, timeout: Duration) -> Result<(), String> {
     }
 }
 
+fn effective_config_path(config_path: &str) -> String {
+    let config_path = config_path.trim();
+    if !config_path.is_empty() {
+        return config_path.into();
+    }
+    default_config_toml_path()
+        .map(|path| path_to_string(&path))
+        .unwrap_or_default()
+}
+
+fn listen_for_config_path(config_path: &str) -> String {
+    config_listen_from_path(config_path).unwrap_or_else(|| "127.0.0.1:3000".into())
+}
+
+fn config_listen_from_path(config_path: &str) -> Option<String> {
+    let path = effective_config_path(config_path);
+    let raw = fs::read_to_string(path).ok()?;
+    let value: toml::Value = toml::from_str(&raw).ok()?;
+    value
+        .get("server")
+        .and_then(|server| server.get("listen"))
+        .and_then(toml::Value::as_str)
+        .map(str::trim)
+        .filter(|listen| !listen.is_empty())
+        .map(str::to_string)
+}
+
+fn gateway_health_ok_for_config(config_path: &str) -> bool {
+    let base = dashboard_base_host(&listen_for_config_path(config_path));
+    http_probe(&base, "/health").ok
+}
+
+fn stop_external_gateways_for_config(config_path: &str) -> Result<(), String> {
+    let listen = listen_for_config_path(config_path);
+    let base = dashboard_base_host(&listen);
+    let (_, port) = parse_host_port(&base)?;
+    let pids = listening_pids(port)?;
+    let current_pid = std::process::id();
+    let mut stopped = Vec::new();
+
+    for pid in pids.into_iter().filter(|pid| *pid != current_pid) {
+        let command_line = process_command_line(pid).unwrap_or_default();
+        let lower = command_line.to_lowercase();
+        if !(lower.contains("ferryllm") && lower.contains("serve"))
+            || lower.contains("ferryllm-desktop")
+        {
+            return Err(format!(
+                "listen port {} is occupied by non-ferryllm process PID {}",
+                port, pid
+            ));
+        }
+        terminate_process_tree(pid)?;
+        stopped.push(pid);
+    }
+
+    if stopped.is_empty() {
+        return Err(format!(
+            "listen port {} responded as a gateway, but no ferryllm serve process was found",
+            port
+        ));
+    }
+
+    let started_at = Instant::now();
+    while gateway_health_ok_for_config(config_path) {
+        if started_at.elapsed() >= Duration::from_secs(5) {
+            return Err(format!(
+                "external ferryllm on {} did not stop after replacing PIDs {:?}",
+                listen, stopped
+            ));
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn listening_pids(port: u16) -> Result<Vec<u32>, String> {
+    let script = format!(
+        "Get-NetTCPConnection -LocalPort {} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess",
+        port
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(string_error)?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(parse_pid_lines(&String::from_utf8_lossy(&output.stdout)))
+}
+
+#[cfg(not(windows))]
+fn listening_pids(port: u16) -> Result<Vec<u32>, String> {
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(format!("lsof -tiTCP:{} -sTCP:LISTEN 2>/dev/null || true", port))
+        .output()
+        .map_err(string_error)?;
+    Ok(parse_pid_lines(&String::from_utf8_lossy(&output.stdout)))
+}
+
+fn parse_pid_lines(text: &str) -> Vec<u32> {
+    text.lines()
+        .filter_map(|line| line.trim().parse::<u32>().ok())
+        .collect()
+}
+
+#[cfg(windows)]
+fn process_command_line(pid: u32) -> Result<String, String> {
+    let script = format!(
+        "(Get-CimInstance Win32_Process -Filter \"ProcessId={}\").CommandLine",
+        pid
+    );
+    let output = Command::new("powershell")
+        .args(["-NoProfile", "-Command", &script])
+        .output()
+        .map_err(string_error)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(not(windows))]
+fn process_command_line(pid: u32) -> Result<String, String> {
+    let output = Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "command="])
+        .output()
+        .map_err(string_error)?;
+    if output.status.success() {
+        Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(windows)]
+fn terminate_process_tree(pid: u32) -> Result<(), String> {
+    let output = Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .output()
+        .map_err(string_error)?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+#[cfg(not(windows))]
+fn terminate_process_tree(pid: u32) -> Result<(), String> {
+    let status = Command::new("kill")
+        .args(["-TERM", &pid.to_string()])
+        .status()
+        .map_err(string_error)?;
+    if !status.success() {
+        return Err(format!("failed to terminate PID {}", pid));
+    }
+    thread::sleep(Duration::from_millis(500));
+    let _ = Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .status();
+    Ok(())
+}
+
 fn dashboard_base_host(listen: &str) -> String {
     let listen = listen.trim();
     if listen.is_empty() {
@@ -1372,10 +2017,15 @@ fn probe_provider_inner(request: ProviderProbeRequest) -> Result<ProbeResult, St
                 let status = resp.status();
                 let body = resp.text().unwrap_or_default();
                 if status.is_success() {
+                    let body = if request.mode == "models" {
+                        summarize_models_body(&body)
+                    } else {
+                        summarize_probe_body(&body)
+                    };
                     return Ok(ProbeResult {
                         ok: true,
                         status: Some(status.as_u16()),
-                        body: summarize_probe_body(&body),
+                        body,
                         error: None,
                     });
                 }
@@ -1435,6 +2085,29 @@ fn resolve_probe_api_key(request: &ProviderProbeRequest) -> Option<String> {
             }
         }
     }
+    if let Some(url) = request
+        .api_key_url
+        .as_ref()
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if let Ok(client) = reqwest::blocking::Client::builder()
+            .timeout(Duration::from_secs(5))
+            .build()
+        {
+            if let Ok(resp) = client.get(url).send() {
+                if resp.status().is_success() {
+                    if let Ok(body) = resp.text() {
+                        let key = body.trim();
+                        if !key.is_empty() {
+                            return Some(key.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
     None
 }
 
@@ -1449,6 +2122,39 @@ fn summarize_probe_body(body: &str) -> String {
     } else {
         format!("{}...", &trimmed[..800])
     }
+}
+
+fn summarize_models_body(body: &str) -> String {
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(body) else {
+        return summarize_probe_body(body);
+    };
+    let items = value
+        .get("data")
+        .or_else(|| value.get("models"))
+        .and_then(|value| value.as_array())
+        .cloned()
+        .or_else(|| value.as_array().cloned())
+        .unwrap_or_default();
+    let mut models = Vec::<String>::new();
+    for item in items {
+        let id = item
+            .as_str()
+            .map(str::to_string)
+            .or_else(|| item.get("id").and_then(|value| value.as_str()).map(str::to_string))
+            .or_else(|| {
+                item.get("name")
+                    .and_then(|value| value.as_str())
+                    .map(str::to_string)
+            });
+        if let Some(id) = id {
+            let id = id.trim();
+            if !id.is_empty() && !models.iter().any(|existing| existing == id) {
+                models.push(id.to_string());
+            }
+        }
+    }
+    models.sort();
+    serde_json::json!({ "models": models }).to_string()
 }
 
 fn http_get_local(base: &str, path: &str) -> Result<(u16, String), String> {
@@ -1552,6 +2258,8 @@ pub fn run() {
             launch_cli,
             launch_vscode,
             write_config_to_default,
+            save_launcher_state,
+            load_launcher_state,
             save_config_to_default,
             load_config_from_default
         ])

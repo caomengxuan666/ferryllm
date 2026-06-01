@@ -471,10 +471,13 @@ fn parse_responses_reasoning(reasoning: &Option<ResponsesReasoning>) -> Option<R
         .and_then(|r| r.effort.as_ref())
         .and_then(|e| match e.as_str() {
             "none" => Some(ReasoningEffort::None),
+            "minimal" => Some(ReasoningEffort::Minimal),
             "low" => Some(ReasoningEffort::Low),
             "medium" => Some(ReasoningEffort::Medium),
             "high" => Some(ReasoningEffort::High),
             "xhigh" => Some(ReasoningEffort::XHigh),
+            "max" => Some(ReasoningEffort::Max),
+            "ultracode" => Some(ReasoningEffort::Ultracode),
             _ => None,
         })?;
     Some(ReasoningControl {

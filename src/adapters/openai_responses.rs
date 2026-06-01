@@ -3,13 +3,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest::{header::USER_AGENT, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace};
 
-use crate::adapter::{Adapter, AdapterError, ApiKey};
+use crate::adapter::{outbound_user_agent, Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     push_summary_field, request_shape_debug_enabled, stable_hash_hex, summarize_flag,
@@ -189,10 +189,11 @@ fn ir_to_responses_request(req: &ChatRequest) -> ResponsesRequest {
 fn responses_reasoning_from_ir(reasoning: &ReasoningControl) -> Option<ResponsesReasoning> {
     let effort = match reasoning.effort {
         ReasoningEffort::None => "none",
+        ReasoningEffort::Minimal => "minimal",
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
-        ReasoningEffort::XHigh => "xhigh",
+        ReasoningEffort::XHigh | ReasoningEffort::Max | ReasoningEffort::Ultracode => "xhigh",
     };
     Some(ResponsesReasoning {
         effort: effort.into(),
@@ -466,6 +467,7 @@ impl Adapter for OpenaiResponsesAdapter {
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key.read()))
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await
@@ -510,6 +512,7 @@ impl Adapter for OpenaiResponsesAdapter {
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key.read()))
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await

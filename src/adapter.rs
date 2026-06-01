@@ -4,7 +4,25 @@ use std::sync::{Arc, RwLock};
 use async_trait::async_trait;
 use futures::Stream;
 
-use crate::ir::{ChatRequest, ChatResponse, StreamEvent};
+use crate::ir::{ChatRequest, ChatResponse, StreamEvent, EXTRA_HTTP_USER_AGENT};
+
+pub const DEFAULT_USER_AGENT: &str = concat!("ferryllm/", env!("CARGO_PKG_VERSION"));
+
+pub fn outbound_user_agent(request: &ChatRequest) -> &str {
+    normalized_user_agent(
+        request
+            .extra
+            .get(EXTRA_HTTP_USER_AGENT)
+            .and_then(|value| value.as_str()),
+    )
+}
+
+pub fn normalized_user_agent(user_agent: Option<&str>) -> &str {
+    user_agent
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(DEFAULT_USER_AGENT)
+}
 
 /// Wire protocol used by a client endpoint or backend adapter.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,7 +126,11 @@ pub trait Adapter: Send + Sync {
     /// Forward a non-streaming request as raw bytes (passthrough mode).
     ///
     /// Default implementation returns `UnsupportedFeature`.
-    async fn chat_raw(&self, _body: &[u8]) -> Result<RawResponse, AdapterError> {
+    async fn chat_raw(
+        &self,
+        _body: &[u8],
+        _user_agent: Option<&str>,
+    ) -> Result<RawResponse, AdapterError> {
         Err(AdapterError::UnsupportedFeature {
             provider: self.provider_name().to_string(),
             feature: "raw passthrough".into(),
@@ -118,7 +140,11 @@ pub trait Adapter: Send + Sync {
     /// Forward a streaming request as raw bytes (passthrough mode).
     ///
     /// Default implementation returns `UnsupportedFeature`.
-    async fn chat_stream_raw(&self, _body: &[u8]) -> Result<RawResponse, AdapterError> {
+    async fn chat_stream_raw(
+        &self,
+        _body: &[u8],
+        _user_agent: Option<&str>,
+    ) -> Result<RawResponse, AdapterError> {
         Err(AdapterError::UnsupportedFeature {
             provider: self.provider_name().to_string(),
             feature: "raw stream passthrough".into(),
@@ -159,11 +185,19 @@ impl<T: Adapter + ?Sized> Adapter for Box<T> {
         (**self).chat_stream(request).await
     }
 
-    async fn chat_raw(&self, body: &[u8]) -> Result<RawResponse, AdapterError> {
-        (**self).chat_raw(body).await
+    async fn chat_raw(
+        &self,
+        body: &[u8],
+        user_agent: Option<&str>,
+    ) -> Result<RawResponse, AdapterError> {
+        (**self).chat_raw(body, user_agent).await
     }
 
-    async fn chat_stream_raw(&self, body: &[u8]) -> Result<RawResponse, AdapterError> {
-        (**self).chat_stream_raw(body).await
+    async fn chat_stream_raw(
+        &self,
+        body: &[u8],
+        user_agent: Option<&str>,
+    ) -> Result<RawResponse, AdapterError> {
+        (**self).chat_stream_raw(body, user_agent).await
     }
 }

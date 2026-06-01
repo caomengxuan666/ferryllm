@@ -3,11 +3,11 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::Stream;
-use reqwest::Client;
+use reqwest::{header::USER_AGENT, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapter::{Adapter, AdapterError, ApiKey};
+use crate::adapter::{normalized_user_agent, outbound_user_agent, Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     push_summary_field, request_shape_debug_enabled, stable_hash_hex, summarize_flag,
@@ -364,10 +364,11 @@ fn ir_to_openai_request(req: &ChatRequest) -> OpenAIChatRequest {
 fn openai_reasoning_from_ir(reasoning: &ReasoningControl) -> Option<OpenAIReasoning> {
     let effort = match reasoning.effort {
         ReasoningEffort::None => return None,
+        ReasoningEffort::Minimal => "minimal",
         ReasoningEffort::Low => "low",
         ReasoningEffort::Medium => "medium",
         ReasoningEffort::High => "high",
-        ReasoningEffort::XHigh => "xhigh",
+        ReasoningEffort::XHigh | ReasoningEffort::Max | ReasoningEffort::Ultracode => "xhigh",
     };
     Some(OpenAIReasoning {
         effort: effort.into(),
@@ -809,13 +810,18 @@ impl Adapter for OpenaiAdapter {
         crate::adapter::Protocol::OpenAI
     }
 
-    async fn chat_raw(&self, body: &[u8]) -> Result<crate::adapter::RawResponse, AdapterError> {
+    async fn chat_raw(
+        &self,
+        body: &[u8],
+        user_agent: Option<&str>,
+    ) -> Result<crate::adapter::RawResponse, AdapterError> {
         let url = format!("{}/v1/chat/completions", self.base_url.read());
         info!(provider = "openai", "sending raw passthrough request");
         let resp = self
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key.read()))
+            .header(USER_AGENT, normalized_user_agent(user_agent))
             .header("content-type", "application/json")
             .body(body.to_vec())
             .send()
@@ -841,6 +847,7 @@ impl Adapter for OpenaiAdapter {
     async fn chat_stream_raw(
         &self,
         body: &[u8],
+        user_agent: Option<&str>,
     ) -> Result<crate::adapter::RawResponse, AdapterError> {
         let url = format!("{}/v1/chat/completions", self.base_url.read());
         info!(
@@ -851,6 +858,7 @@ impl Adapter for OpenaiAdapter {
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key.read()))
+            .header(USER_AGENT, normalized_user_agent(user_agent))
             .header("content-type", "application/json")
             .body(body.to_vec())
             .send()
@@ -892,6 +900,7 @@ impl Adapter for OpenaiAdapter {
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key.read()))
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await
@@ -940,6 +949,7 @@ impl Adapter for OpenaiAdapter {
             .client
             .post(&url)
             .header("Authorization", format!("Bearer {}", self.api_key.read()))
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await

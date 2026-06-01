@@ -22,7 +22,11 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         "serve" => {
             let config_path = parse_config_path(args)?;
             let config = Config::from_file(&config_path)?;
-            init_logging(&config.logging.level, &config.logging.format);
+            init_logging(
+                &config.logging.level,
+                &config.logging.format,
+                config.logging.ansi,
+            );
             config.validate()?;
 
             let listen: SocketAddr = config.server.listen.parse()?;
@@ -73,10 +77,12 @@ fn parse_config_path(
     config_path.ok_or_else(|| "missing --config <path>".into())
 }
 
-fn init_logging(level: &str, format: &str) {
+fn init_logging(level: &str, format: &str, ansi: bool) {
     // Always try to construct a new EnvFilter with the specified level
     let filter = EnvFilter::new(level);
-    let builder = tracing_subscriber::fmt().with_env_filter(filter);
+    let builder = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(ansi && format != "json");
 
     let result = if format == "json" {
         builder.json().try_init()
@@ -87,7 +93,7 @@ fn init_logging(level: &str, format: &str) {
     let _ = result;
 
     // Log after initialization so it actually prints
-    tracing::info!(level = %level, format = %format, "logging initialized");
+    tracing::info!(level = %level, format = %format, ansi, "logging initialized");
 }
 
 fn print_help() {

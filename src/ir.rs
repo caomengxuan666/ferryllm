@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+pub const EXTRA_HTTP_USER_AGENT: &str = "http.user_agent";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatRequest {
     pub model: String,
@@ -44,21 +46,27 @@ pub struct ReasoningControl {
 #[serde(rename_all = "snake_case")]
 pub enum ReasoningEffort {
     None,
+    Minimal,
     Low,
     Medium,
     High,
     #[serde(alias = "xhigh")]
     XHigh,
+    Max,
+    Ultracode,
 }
 
 impl ReasoningEffort {
     pub fn as_str(&self) -> &'static str {
         match self {
             ReasoningEffort::None => "none",
+            ReasoningEffort::Minimal => "minimal",
             ReasoningEffort::Low => "low",
             ReasoningEffort::Medium => "medium",
             ReasoningEffort::High => "high",
             ReasoningEffort::XHigh => "xhigh",
+            ReasoningEffort::Max => "max",
+            ReasoningEffort::Ultracode => "ultracode",
         }
     }
 }

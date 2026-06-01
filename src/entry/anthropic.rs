@@ -250,10 +250,13 @@ fn parse_anthropic_reasoning(req: &AnthropicMessageRequest) -> Option<ReasoningC
 
 fn reasoning_effort_from_budget(budget_tokens: u32) -> ReasoningEffort {
     match budget_tokens {
-        0..=2047 => ReasoningEffort::Low,
+        0..=511 => ReasoningEffort::Minimal,
+        512..=2047 => ReasoningEffort::Low,
         2048..=8191 => ReasoningEffort::Medium,
         8192..=16383 => ReasoningEffort::High,
-        _ => ReasoningEffort::XHigh,
+        16384..=32767 => ReasoningEffort::XHigh,
+        32768..=65535 => ReasoningEffort::Max,
+        _ => ReasoningEffort::Ultracode,
     }
 }
 

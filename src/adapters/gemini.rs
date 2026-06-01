@@ -4,13 +4,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest::{header::USER_AGENT, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio_stream::wrappers::UnboundedReceiverStream;
 use tracing::{debug, error, info, trace};
 
-use crate::adapter::{Adapter, AdapterError, ApiKey};
+use crate::adapter::{outbound_user_agent, Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     request_shape_debug_enabled, stable_hash_hex, summarize_flag, summarize_optional_text,
@@ -273,8 +273,11 @@ fn gemini_thinking_from_ir(reasoning: &ReasoningControl) -> Option<GeminiThinkin
     }
 
     let thinking_level = match reasoning.effort {
-        ReasoningEffort::Low | ReasoningEffort::Medium => "low",
-        ReasoningEffort::High | ReasoningEffort::XHigh => "high",
+        ReasoningEffort::Minimal | ReasoningEffort::Low | ReasoningEffort::Medium => "low",
+        ReasoningEffort::High
+        | ReasoningEffort::XHigh
+        | ReasoningEffort::Max
+        | ReasoningEffort::Ultracode => "high",
         ReasoningEffort::None => "low",
     };
     Some(GeminiThinkingConfig {
@@ -586,6 +589,7 @@ impl Adapter for GeminiAdapter {
             .client
             .post(&url)
             .header("x-goog-api-key", &self.api_key.read())
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await
@@ -629,6 +633,7 @@ impl Adapter for GeminiAdapter {
             .client
             .post(&url)
             .header("x-goog-api-key", &self.api_key.read())
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await
@@ -650,7 +655,11 @@ impl Adapter for GeminiAdapter {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
 
         tokio::spawn(async move {
-            let _ = tx.send(Ok(StreamEvent::MessageStart { message_id, model }));
+            let _ = tx.send(Ok(StreamEvent::MessageStart {
+                message_id,
+                model,
+                input_tokens: None,
+            }));
             let mut buffer = String::new();
             let mut text_started = false;
             let mut text_index = None::<u32>;

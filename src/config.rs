@@ -54,6 +54,10 @@ pub struct ServerConfig {
     pub circuit_breaker_cooldown_secs: u64,
     #[serde(default)]
     pub default_reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub max_reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default)]
+    pub reasoning_policy: ReasoningPolicy,
 }
 
 impl Default for ServerConfig {
@@ -69,6 +73,29 @@ impl Default for ServerConfig {
             circuit_breaker_failures: None,
             circuit_breaker_cooldown_secs: default_circuit_breaker_cooldown_secs(),
             default_reasoning_effort: None,
+            max_reasoning_effort: None,
+            reasoning_policy: ReasoningPolicy::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReasoningPolicy {
+    Preserve,
+    #[default]
+    FillMissing,
+    Cap,
+    Force,
+}
+
+impl From<ReasoningPolicy> for crate::server::ReasoningPolicy {
+    fn from(value: ReasoningPolicy) -> Self {
+        match value {
+            ReasoningPolicy::Preserve => Self::Preserve,
+            ReasoningPolicy::FillMissing => Self::FillMissing,
+            ReasoningPolicy::Cap => Self::Cap,
+            ReasoningPolicy::Force => Self::Force,
         }
     }
 }
@@ -147,6 +174,8 @@ pub struct LoggingConfig {
     pub level: String,
     #[serde(default = "default_log_format")]
     pub format: String,
+    #[serde(default = "default_log_ansi")]
+    pub ansi: bool,
 }
 
 impl Default for LoggingConfig {
@@ -154,6 +183,7 @@ impl Default for LoggingConfig {
         Self {
             level: default_log_level(),
             format: default_log_format(),
+            ansi: default_log_ansi(),
         }
     }
 }
@@ -372,6 +402,8 @@ impl Config {
             circuit_breaker_failures: self.server.circuit_breaker_failures,
             circuit_breaker_cooldown_secs: self.server.circuit_breaker_cooldown_secs,
             default_reasoning_effort: self.server.default_reasoning_effort.clone(),
+            max_reasoning_effort: self.server.max_reasoning_effort.clone(),
+            reasoning_policy: self.server.reasoning_policy.clone().into(),
             auth_enabled: self.auth.enabled,
             auth_keys,
             per_key_rate_limit_per_minute: self.auth.per_key_rate_limit_per_minute,
@@ -895,6 +927,10 @@ fn default_log_level() -> String {
 
 fn default_log_format() -> String {
     "text".into()
+}
+
+fn default_log_ansi() -> bool {
+    false
 }
 
 fn default_metrics_enabled() -> bool {

@@ -2,11 +2,11 @@ use std::pin::Pin;
 
 use async_trait::async_trait;
 use futures::{Stream, StreamExt};
-use reqwest::Client;
+use reqwest::{header::USER_AGENT, Client};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::adapter::{Adapter, AdapterError, ApiKey};
+use crate::adapter::{normalized_user_agent, outbound_user_agent, Adapter, AdapterError, ApiKey};
 use crate::ir::*;
 use crate::token_observability::{
     push_summary_field, request_shape_debug_enabled, stable_hash_hex, summarize_flag,
@@ -435,10 +435,13 @@ fn anthropic_thinking_from_ir(reasoning: &ReasoningControl) -> Option<AnthropicT
 fn anthropic_budget_from_effort(effort: &ReasoningEffort) -> u32 {
     match effort {
         ReasoningEffort::None => 0,
+        ReasoningEffort::Minimal => 512,
         ReasoningEffort::Low => 1024,
         ReasoningEffort::Medium => 4096,
         ReasoningEffort::High => 8192,
         ReasoningEffort::XHigh => 16384,
+        ReasoningEffort::Max => 32768,
+        ReasoningEffort::Ultracode => 65536,
     }
 }
 
@@ -774,7 +777,11 @@ impl Adapter for AnthropicAdapter {
         crate::adapter::Protocol::Anthropic
     }
 
-    async fn chat_raw(&self, body: &[u8]) -> Result<crate::adapter::RawResponse, AdapterError> {
+    async fn chat_raw(
+        &self,
+        body: &[u8],
+        user_agent: Option<&str>,
+    ) -> Result<crate::adapter::RawResponse, AdapterError> {
         let url = format!("{}/v1/messages", self.base_url.read());
         info!(provider = "anthropic", "sending raw passthrough request");
         let resp = self
@@ -782,6 +789,7 @@ impl Adapter for AnthropicAdapter {
             .post(&url)
             .header("x-api-key", &self.api_key.read())
             .header("anthropic-version", &self.anthropic_version)
+            .header(USER_AGENT, normalized_user_agent(user_agent))
             .header("content-type", "application/json")
             .body(body.to_vec())
             .send()
@@ -807,6 +815,7 @@ impl Adapter for AnthropicAdapter {
     async fn chat_stream_raw(
         &self,
         body: &[u8],
+        user_agent: Option<&str>,
     ) -> Result<crate::adapter::RawResponse, AdapterError> {
         let url = format!("{}/v1/messages", self.base_url.read());
         info!(
@@ -818,6 +827,7 @@ impl Adapter for AnthropicAdapter {
             .post(&url)
             .header("x-api-key", &self.api_key.read())
             .header("anthropic-version", &self.anthropic_version)
+            .header(USER_AGENT, normalized_user_agent(user_agent))
             .header("content-type", "application/json")
             .body(body.to_vec())
             .send()
@@ -858,6 +868,7 @@ impl Adapter for AnthropicAdapter {
             .post(&url)
             .header("x-api-key", &self.api_key.read())
             .header("anthropic-version", &self.anthropic_version)
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await
@@ -905,6 +916,7 @@ impl Adapter for AnthropicAdapter {
             .post(&url)
             .header("x-api-key", &self.api_key.read())
             .header("anthropic-version", &self.anthropic_version)
+            .header(USER_AGENT, outbound_user_agent(request))
             .json(&native)
             .send()
             .await

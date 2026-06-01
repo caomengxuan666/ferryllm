@@ -9,7 +9,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use axum::{
     body::Bytes,
     extract::State,
-    http::{HeaderMap, StatusCode},
+    http::{header, HeaderMap, StatusCode},
     response::{sse::Event, IntoResponse, Sse},
     routing::post,
     Router,
@@ -79,6 +79,8 @@ pub struct ServerOptions {
     pub per_key_max_concurrent_requests: Option<usize>,
     pub metrics_enabled: bool,
     pub default_reasoning_effort: Option<ir::ReasoningEffort>,
+    pub max_reasoning_effort: Option<ir::ReasoningEffort>,
+    pub reasoning_policy: ReasoningPolicy,
     pub prompt_cache: PromptCacheOptions,
 }
 
@@ -99,9 +101,20 @@ impl Default for ServerOptions {
             per_key_max_concurrent_requests: None,
             metrics_enabled: true,
             default_reasoning_effort: None,
+            max_reasoning_effort: None,
+            reasoning_policy: ReasoningPolicy::default(),
             prompt_cache: PromptCacheOptions::default(),
         }
     }
+}
+
+#[derive(Clone, Debug, Default)]
+pub enum ReasoningPolicy {
+    Preserve,
+    #[default]
+    FillMissing,
+    Cap,
+    Force,
 }
 
 #[derive(Clone, Debug)]
@@ -663,15 +676,93 @@ fn apply_request_shape_debug_policy(req: &mut ir::ChatRequest, options: &PromptC
     }
 }
 
-fn apply_default_reasoning_policy(req: &mut ir::ChatRequest, options: &ServerOptions) {
-    if req.reasoning.is_none() {
-        if let Some(effort) = &options.default_reasoning_effort {
-            req.reasoning = Some(ReasoningControl {
-                effort: effort.clone(),
-                budget_tokens: None,
-            });
+#[derive(Debug)]
+struct ReasoningPolicyObservation {
+    requested: Option<ir::ReasoningEffort>,
+    applied: Option<ir::ReasoningEffort>,
+}
+
+fn apply_reasoning_policy(
+    req: &mut ir::ChatRequest,
+    options: &ServerOptions,
+) -> ReasoningPolicyObservation {
+    let requested = req
+        .reasoning
+        .as_ref()
+        .map(|reasoning| reasoning.effort.clone());
+    match options.reasoning_policy {
+        ReasoningPolicy::Preserve => {}
+        ReasoningPolicy::FillMissing => {
+            if req.reasoning.is_none() {
+                set_reasoning_effort(req, options.default_reasoning_effort.clone());
+            }
+        }
+        ReasoningPolicy::Cap => {
+            if req.reasoning.is_none() {
+                set_reasoning_effort(req, options.default_reasoning_effort.clone());
+            }
+            if let (Some(reasoning), Some(max_effort)) = (
+                req.reasoning.as_mut(),
+                options.max_reasoning_effort.as_ref(),
+            ) {
+                if reasoning_effort_rank(&reasoning.effort) > reasoning_effort_rank(max_effort) {
+                    reasoning.effort = max_effort.clone();
+                    reasoning.budget_tokens = None;
+                }
+            }
+        }
+        ReasoningPolicy::Force => {
+            set_reasoning_effort(
+                req,
+                options
+                    .default_reasoning_effort
+                    .clone()
+                    .or_else(|| options.max_reasoning_effort.clone()),
+            );
         }
     }
+    ReasoningPolicyObservation {
+        requested,
+        applied: req
+            .reasoning
+            .as_ref()
+            .map(|reasoning| reasoning.effort.clone()),
+    }
+}
+
+fn set_reasoning_effort(req: &mut ir::ChatRequest, effort: Option<ir::ReasoningEffort>) {
+    req.reasoning = effort.map(|effort| ReasoningControl {
+        effort,
+        budget_tokens: None,
+    });
+}
+
+fn reasoning_effort_rank(effort: &ir::ReasoningEffort) -> u8 {
+    match effort {
+        ir::ReasoningEffort::None => 0,
+        ir::ReasoningEffort::Minimal => 1,
+        ir::ReasoningEffort::Low => 2,
+        ir::ReasoningEffort::Medium => 3,
+        ir::ReasoningEffort::High => 4,
+        ir::ReasoningEffort::XHigh => 5,
+        ir::ReasoningEffort::Max => 6,
+        ir::ReasoningEffort::Ultracode => 7,
+    }
+}
+
+fn attach_user_agent(headers: &HeaderMap, req: &mut ir::ChatRequest) {
+    let Some(user_agent) = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return;
+    };
+    req.extra.insert(
+        ir::EXTRA_HTTP_USER_AGENT.into(),
+        serde_json::Value::String(user_agent.to_string()),
+    );
 }
 
 fn is_cacheable_block(block: &&mut ContentBlock) -> bool {
@@ -729,6 +820,7 @@ struct ModelAndStream {
 async fn try_passthrough(
     state: &Arc<AppState>,
     body: &Bytes,
+    headers: &HeaderMap,
     entry_protocol: Protocol,
     request_id: &str,
 ) -> Result<Option<axum::response::Response>, AppError> {
@@ -761,10 +853,13 @@ async fn try_passthrough(
         .metrics
         .inc_labeled_request(&route.provider, &meta.model);
 
+    let user_agent = headers
+        .get(header::USER_AGENT)
+        .and_then(|value| value.to_str().ok());
     let raw = if meta.stream {
-        route.adapter.chat_stream_raw(body).await
+        route.adapter.chat_stream_raw(body, user_agent).await
     } else {
-        route.adapter.chat_raw(body).await
+        route.adapter.chat_raw(body, user_agent).await
     }
     .map_err(AppError::from_adapter)?;
 
@@ -784,7 +879,9 @@ async fn openai_chat_handler(
     let request_id = request_id(&headers);
 
     // Fast path: raw passthrough when protocol matches.
-    if let Some(resp) = try_passthrough(&state, &body, Protocol::OpenAI, &request_id).await? {
+    if let Some(resp) =
+        try_passthrough(&state, &body, &headers, Protocol::OpenAI, &request_id).await?
+    {
         return Ok(resp);
     }
 
@@ -794,6 +891,7 @@ async fn openai_chat_handler(
         serde_json::from_value(body).map_err(|e| AppError::bad_request(e.to_string()))?;
     let stream = openai_req.stream;
     let mut ir_req = openai::openai_to_ir(&openai_req);
+    attach_user_agent(&headers, &mut ir_req);
     strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
@@ -806,7 +904,8 @@ async fn openai_chat_handler(
     // Apply model rewrite so the backend sees the correct model name.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
-    apply_default_reasoning_policy(&mut ir_req, &state.options);
+    let reasoning = apply_reasoning_policy(&mut ir_req, &state.options);
+    info!(request_id = %request_id, entry = "openai", requested_reasoning = ?reasoning.requested, applied_reasoning = ?reasoning.applied, "applied reasoning policy");
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -964,8 +1063,14 @@ async fn responses_handler(
     let request_id = request_id(&headers);
 
     // Fast path: raw passthrough when protocol matches.
-    if let Some(resp) =
-        try_passthrough(&state, &body, Protocol::OpenAIResponses, &request_id).await?
+    if let Some(resp) = try_passthrough(
+        &state,
+        &body,
+        &headers,
+        Protocol::OpenAIResponses,
+        &request_id,
+    )
+    .await?
     {
         return Ok(resp);
     }
@@ -977,6 +1082,7 @@ async fn responses_handler(
     let stream = resp_req.stream;
     let mut ir_req =
         openai_responses::responses_to_ir_with_cache(&resp_req, Some(&state.tool_call_cache));
+    attach_user_agent(&headers, &mut ir_req);
     strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     let prompt_observation = estimate_prompt_observation(&ir_req);
@@ -988,7 +1094,8 @@ async fn responses_handler(
 
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
-    apply_default_reasoning_policy(&mut ir_req, &state.options);
+    let reasoning = apply_reasoning_policy(&mut ir_req, &state.options);
+    info!(request_id = %request_id, entry = "responses", requested_reasoning = ?reasoning.requested, applied_reasoning = ?reasoning.applied, "applied reasoning policy");
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -1228,7 +1335,9 @@ async fn anthropic_messages_handler(
     let request_id = request_id(&headers);
 
     // Fast path: raw passthrough when protocol matches.
-    if let Some(resp) = try_passthrough(&state, &body, Protocol::Anthropic, &request_id).await? {
+    if let Some(resp) =
+        try_passthrough(&state, &body, &headers, Protocol::Anthropic, &request_id).await?
+    {
         return Ok(resp);
     }
 
@@ -1238,6 +1347,7 @@ async fn anthropic_messages_handler(
         serde_json::from_value(body).map_err(|e| AppError::bad_request(e.to_string()))?;
     let stream = anthro_req.stream;
     let mut ir_req = anthropic::anthropic_to_ir(&anthro_req);
+    attach_user_agent(&headers, &mut ir_req);
     strip_system_line_prefixes(&mut ir_req, &state.options.prompt_cache);
     relocate_system_prefix_context(&mut ir_req, &state.options.prompt_cache);
     apply_anthropic_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
@@ -1251,7 +1361,8 @@ async fn anthropic_messages_handler(
     // Apply model rewrite.
     let display_model = ir_req.model.clone();
     ir_req.model = route.model;
-    apply_default_reasoning_policy(&mut ir_req, &state.options);
+    let reasoning = apply_reasoning_policy(&mut ir_req, &state.options);
+    info!(request_id = %request_id, entry = "anthropic", requested_reasoning = ?reasoning.requested, applied_reasoning = ?reasoning.applied, "applied reasoning policy");
     apply_openai_prompt_cache_policy(&mut ir_req, &state.options.prompt_cache);
     apply_request_shape_debug_policy(&mut ir_req, &state.options.prompt_cache);
     let fallback_count = route.fallbacks.len();
@@ -2660,7 +2771,7 @@ mod tests {
         };
         let mut missing = test_chat_request("gpt-5.4");
 
-        apply_default_reasoning_policy(&mut missing, &options);
+        apply_reasoning_policy(&mut missing, &options);
 
         assert_eq!(
             missing.reasoning,
@@ -2676,13 +2787,39 @@ mod tests {
             budget_tokens: Some(8192),
         });
 
-        apply_default_reasoning_policy(&mut explicit, &options);
+        apply_reasoning_policy(&mut explicit, &options);
 
         assert_eq!(
             explicit.reasoning,
             Some(ir::ReasoningControl {
                 effort: ir::ReasoningEffort::High,
                 budget_tokens: Some(8192),
+            })
+        );
+    }
+
+    #[test]
+    fn cap_reasoning_policy_limits_client_effort() {
+        let options = ServerOptions {
+            reasoning_policy: ReasoningPolicy::Cap,
+            max_reasoning_effort: Some(ir::ReasoningEffort::High),
+            ..ServerOptions::default()
+        };
+        let mut request = test_chat_request("gpt-5.4");
+        request.reasoning = Some(ir::ReasoningControl {
+            effort: ir::ReasoningEffort::XHigh,
+            budget_tokens: Some(16384),
+        });
+
+        let observation = apply_reasoning_policy(&mut request, &options);
+
+        assert_eq!(observation.requested, Some(ir::ReasoningEffort::XHigh));
+        assert_eq!(observation.applied, Some(ir::ReasoningEffort::High));
+        assert_eq!(
+            request.reasoning,
+            Some(ir::ReasoningControl {
+                effort: ir::ReasoningEffort::High,
+                budget_tokens: None,
             })
         );
     }
