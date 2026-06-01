@@ -875,7 +875,8 @@ impl Adapter for OpenaiAdapter {
 
     async fn chat(&self, request: &ChatRequest) -> Result<ChatResponse, AdapterError> {
         let native = ir_to_openai_request(request);
-        let url = format!("{}/v1/chat/completions", self.base_url.read());
+        let base_url = self.base_url.read();
+        let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
         info!(provider = "openai", model = %request.model, stream = request.stream, "sending chat request");
         trace!(provider = "openai", url = %url, body_model = %native.model, "openai request prepared");
         trace!(provider = "openai", request = %summarize_openai_request(&native), "openai outbound request");
@@ -923,7 +924,8 @@ impl Adapter for OpenaiAdapter {
         let mut native = ir_to_openai_request(request);
         native.stream = true;
 
-        let url = format!("{}/v1/chat/completions", self.base_url.read());
+        let base_url = self.base_url.read();
+        let url = format!("{}/v1/chat/completions", base_url.trim_end_matches('/'));
         info!(provider = "openai", model = %request.model, stream = true, "sending streaming request");
         trace!(provider = "openai", request = %summarize_openai_request(&native), "openai outbound streaming request");
         if request_shape_debug_enabled(request) {

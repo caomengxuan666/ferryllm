@@ -934,7 +934,7 @@ fn default_prompt_cache_log_relocated_system_text() -> bool {
 }
 
 fn default_prompt_cache_strip_system_line_prefixes() -> Vec<String> {
-    Vec::new()
+    vec!["x-anthropic-billing-header:".into()]
 }
 
 fn parse_byte_range(value: &str) -> Option<(usize, usize)> {

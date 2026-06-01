@@ -118,6 +118,13 @@ pub struct PromptCacheOptions {
     pub strip_system_line_prefixes: Vec<String>,
 }
 
+const BUILTIN_STRIPPED_SYSTEM_LINE_PREFIXES: &[&str] = &[
+    // Claude Code injects this volatile billing line at the start of the system
+    // prompt. The cch value changes per request and breaks upstream prefix cache
+    // matching if it reaches OpenAI-compatible backends.
+    "x-anthropic-billing-header:",
+];
+
 impl Default for PromptCacheOptions {
     fn default() -> Self {
         Self {
@@ -539,18 +546,11 @@ fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOp
     let Some(system) = req.system.as_mut() else {
         return;
     };
-    if options.strip_system_line_prefixes.is_empty() {
-        return;
-    }
 
     let mut kept = Vec::new();
     let mut stripped_lines = 0usize;
     for line in system.lines() {
-        if options
-            .strip_system_line_prefixes
-            .iter()
-            .any(|prefix| line.starts_with(prefix))
-        {
+        if should_strip_system_line(line, options) {
             stripped_lines += 1;
         } else {
             kept.push(line.to_string());
@@ -567,6 +567,23 @@ fn strip_system_line_prefixes(req: &mut ir::ChatRequest, options: &PromptCacheOp
     }
 
     info!(stripped_lines, "dropped stripped system line prefixes");
+}
+
+fn should_strip_system_line(line: &str, options: &PromptCacheOptions) -> bool {
+    let line = line.trim_start();
+    BUILTIN_STRIPPED_SYSTEM_LINE_PREFIXES
+        .iter()
+        .copied()
+        .chain(
+            options
+                .strip_system_line_prefixes
+                .iter()
+                .map(String::as_str),
+        )
+        .any(|prefix| {
+            let prefix = prefix.trim();
+            !prefix.is_empty() && line.starts_with(prefix)
+        })
 }
 
 fn line_range_intersecting(
@@ -611,16 +628,30 @@ fn trim_blank_boundary(text: &mut String, index: usize) {
 fn apply_openai_prompt_cache_policy(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
     if req.prompt_cache_key.is_none() && !options.openai_prompt_cache_key.trim().is_empty() {
         req.prompt_cache_key = Some(format!(
-            "{}:{}:{}:{}",
+            "{}:{}:tools-{:016x}:system-{:016x}",
             options.openai_prompt_cache_key.trim(),
             req.model,
-            req.tools.len(),
-            req.system.as_ref().map_or(0, |system| system.len())
+            stable_tools_hash(&req.tools),
+            stable_text_hash(req.system.as_deref().unwrap_or(""))
         ));
     }
     if req.prompt_cache_retention.is_none() {
         req.prompt_cache_retention = options.openai_prompt_cache_retention.clone();
     }
+}
+
+fn stable_tools_hash(tools: &[ir::Tool]) -> u64 {
+    let encoded = serde_json::to_string(tools).unwrap_or_default();
+    stable_text_hash(&encoded)
+}
+
+fn stable_text_hash(text: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }
 
 fn apply_request_shape_debug_policy(req: &mut ir::ChatRequest, options: &PromptCacheOptions) {
@@ -1356,6 +1387,7 @@ async fn handle_anthropic_stream(
     use std::sync::atomic::AtomicBool;
     let mut started_text_blocks: HashSet<u32> = HashSet::new();
     let closing_sent = Arc::new(AtomicBool::new(false));
+    let mut message_start_sent = false;
 
     // Anthropic requires consecutive content-block indices without gaps or
     // overlaps. The OpenAI adapter may emit text at choice.index (0) and
@@ -1390,9 +1422,34 @@ async fn handle_anthropic_stream(
                 }
             };
 
+            if matches!(event, ir::StreamEvent::MessageStart { .. }) {
+                if message_start_sent {
+                    return Vec::new();
+                }
+                message_start_sent = true;
+            }
+
             // Normalise content-block indices so they are consecutive
             // starting from 0 and never overlap.
             let event = match event {
+                ir::StreamEvent::ContentBlockStart {
+                    index,
+                    content_block: block @ ir::ContentBlock::Text { .. },
+                } => {
+                    if started_text_blocks.contains(&index) {
+                        return Vec::new();
+                    }
+                    let output_index = *index_remap.entry(index).or_insert_with(|| {
+                        let next = next_output_index;
+                        next_output_index += 1;
+                        next
+                    });
+                    started_text_blocks.insert(index);
+                    ir::StreamEvent::ContentBlockStart {
+                        index: output_index,
+                        content_block: block,
+                    }
+                }
                 ir::StreamEvent::ContentBlockDelta {
                     index,
                     delta: ir::ContentDelta::TextDelta { text },
@@ -2547,10 +2604,12 @@ mod tests {
 
         apply_openai_prompt_cache_policy(&mut request, &PromptCacheOptions::default());
 
-        assert_eq!(
-            request.prompt_cache_key.as_deref(),
-            Some("ferryllm:gpt-5.5:1:13")
+        let expected = format!(
+            "ferryllm:gpt-5.5:tools-{:016x}:system-{:016x}",
+            stable_tools_hash(&request.tools),
+            stable_text_hash("stable system")
         );
+        assert_eq!(request.prompt_cache_key.as_deref(), Some(expected.as_str()));
     }
 
     #[test]
@@ -2578,6 +2637,19 @@ mod tests {
         apply_openai_prompt_cache_policy(&mut high, &PromptCacheOptions::default());
 
         assert_eq!(low.prompt_cache_key, high.prompt_cache_key);
+    }
+
+    #[test]
+    fn openai_prompt_cache_key_changes_when_same_length_system_changes() {
+        let mut left = test_chat_request("gpt-5.5");
+        left.system = Some("prefix cch=abc tail".into());
+        let mut right = test_chat_request("gpt-5.5");
+        right.system = Some("prefix cch=xyz tail".into());
+
+        apply_openai_prompt_cache_policy(&mut left, &PromptCacheOptions::default());
+        apply_openai_prompt_cache_policy(&mut right, &PromptCacheOptions::default());
+
+        assert_ne!(left.prompt_cache_key, right.prompt_cache_key);
     }
 
     #[test]
@@ -2652,6 +2724,28 @@ mod tests {
             Some("stable heading\nstable instruction tail")
         );
         assert!(request.messages.is_empty());
+    }
+
+    #[test]
+    fn strip_system_line_prefixes_always_drops_builtin_volatile_lines() {
+        let mut first = test_chat_request("claude-sonnet-4-6");
+        first.system = Some(
+            "x-anthropic-billing-header: cc_version=2.1; cch=37f8f;\nYou are Claude Code.".into(),
+        );
+        let mut second = test_chat_request("claude-sonnet-4-6");
+        second.system = Some(
+            "x-anthropic-billing-header: cc_version=2.1; cch=22500;\nYou are Claude Code.".into(),
+        );
+        let options = PromptCacheOptions {
+            strip_system_line_prefixes: Vec::new(),
+            ..PromptCacheOptions::default()
+        };
+
+        strip_system_line_prefixes(&mut first, &options);
+        strip_system_line_prefixes(&mut second, &options);
+
+        assert_eq!(first.system.as_deref(), Some("You are Claude Code."));
+        assert_eq!(first.system, second.system);
     }
 
     #[test]

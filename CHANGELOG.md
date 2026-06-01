@@ -2,6 +2,25 @@
 
 All notable changes to ferryllm are documented here.
 
+## 0.3.0 - 2026-06-01
+
+### Added
+
+- Dashboard view for gateway status, metrics, provider/model usage, prompt cache
+  stats, and recent logs.
+- Provider console presets, provider cards, test/usage/copy/delete actions, and
+  desktop launcher workspace/session improvements.
+- Raw passthrough fast path for same-protocol requests.
+
+### Fixed
+
+- Strip volatile Claude Code billing headers by default to keep prompt-cache
+  prefixes stable.
+- Include stable system and tool hashes in OpenAI-compatible prompt cache keys
+  to avoid same-length prompt cache collisions.
+- Use the selected provider when launching/saving runnable gateway config from
+  the desktop app.
+
 ## 0.2.0 - 2026-05-31
 
 ### Added

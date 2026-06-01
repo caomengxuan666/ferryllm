@@ -1,6 +1,6 @@
 [package]
 name = "ferryllm-desktop"
-version = "0.2.0"
+version = "0.3.0"
 description = "Desktop control panel for ferryllm"
 authors = ["ferryllm"]
 edition = "2021"
@@ -25,4 +25,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.9"
 dirs = "6"
-
+reqwest = { version = "0.12", features = ["blocking", "json", "rustls-tls"], default-features = false }
