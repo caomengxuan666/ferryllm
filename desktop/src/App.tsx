@@ -2801,9 +2801,28 @@ function LauncherView({
   onTogglePin: (path: string) => void;
 }) {
   const hasWorkspaces = filteredWorkspaces.length > 0;
+  const nativeSessionCount = aiSessions.length;
+  const selectedProviderName = selectedWorkspace?.defaultProviderName || providers[0]?.name || "No provider";
   return (
     <section className="launcher-shell overflow-hidden rounded-lg border border-border bg-surface">
       <main className="min-w-0">
+        <div className="launcher-hero">
+          <div className="launcher-hero-copy">
+            <p className="launcher-eyebrow">Project launcher</p>
+            <h1>Launch every AI workspace through one local gateway.</h1>
+            <p>Pick a project, bind the right provider, choose reasoning, then start Codex, Claude, OpenCode, or VS Code without touching env files.</p>
+          </div>
+          <div className="launcher-hero-actions">
+            <Button variant="primary" icon={<Plus size={14} />} onClick={onCreateWorkspace}>New project</Button>
+            <Button icon={<FolderOpen size={14} />} onClick={onAddWorkspace}>Open project</Button>
+          </div>
+          <div className="launcher-hero-metrics">
+            <LauncherMetric icon={<FolderOpen size={15} />} label="Projects" value={String(filteredWorkspaces.length)} detail={selectedWorkspace?.name || "No project selected"} />
+            <LauncherMetric icon={<Network size={15} />} label="Provider" value={selectedProviderName} detail={`${providers.length} configured`} />
+            <LauncherMetric icon={<History size={15} />} label="Sessions" value={String(nativeSessionCount)} detail={`${selectedWorkspaceSessions.length} in current project`} />
+          </div>
+        </div>
+
         <div className="launcher-welcome-header">
           <div className="relative min-w-[240px] flex-1">
             <Search size={16} className="provider-search-icon pointer-events-none absolute top-1/2 -translate-y-1/2 text-icon" />
@@ -2815,8 +2834,7 @@ function LauncherView({
             />
           </div>
           <div className="flex flex-wrap justify-end gap-2">
-            <Button icon={<Plus size={14} />} onClick={onCreateWorkspace}>New project</Button>
-            <Button icon={<FolderOpen size={14} />} onClick={onAddWorkspace}>Open</Button>
+            <Button icon={<Network size={14} />} onClick={() => selectedWorkspace && onLaunchWorkspace(selectedWorkspace, selectedWorkspace.defaultLaunchType, selectedWorkspace.defaultTool)} disabled={!selectedWorkspace || !providers.length}>Launch selected</Button>
             <Button icon={<Download size={14} />} onClick={() => undefined} disabled>Clone repo</Button>
           </div>
         </div>
@@ -2898,14 +2916,27 @@ function LauncherView({
   );
 }
 
+function LauncherMetric({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
+  return (
+    <div className="launcher-metric">
+      <span>{icon}</span>
+      <div className="min-w-0">
+        <p>{label}</p>
+        <strong title={value}>{value}</strong>
+        <small title={detail}>{detail}</small>
+      </div>
+    </div>
+  );
+}
+
 function LauncherNavItem({ icon, label, count, active, onClick }: { icon: ReactNode; label: string; count?: number; active?: boolean; onClick?: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors",
-        active ? "bg-surface text-heading shadow-sm" : "text-muted hover:bg-muted-soft hover:text-heading"
+        "launcher-nav-item flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors",
+        active ? "is-active shadow-sm" : "text-muted"
       )}
     >
       {icon}
@@ -3053,36 +3084,21 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
               </span>
               <span className="relative flex items-center gap-1">
                 <span className="hidden text-[11px] font-semibold text-muted xl:inline">{formatRelativeTime(workspace.lastUsed)}</span>
-                <select
-                  className="launcher-gateway-select"
-                  value={providerReady ? workspace.defaultProviderName : ""}
+                <ProjectSelect
                   title="Project gateway"
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => {
-                    event.stopPropagation();
-                    onSetGateway(workspace.path, event.currentTarget.value);
-                  }}
-                >
-                  <option value="" disabled>Gateway</option>
-                  {providers.map((provider) => (
-                    <option key={provider.name} value={provider.name}>{provider.name}</option>
-                  ))}
-                </select>
-                <select
-                  className="launcher-gateway-select"
-                  value={workspace.defaultReasoningEffort ?? ""}
+                  placeholder="Gateway"
+                  value={providerReady ? workspace.defaultProviderName : ""}
+                  options={providers.map((provider) => ({ value: provider.name, label: provider.name }))}
+                  disabled={!providers.length}
+                  onChange={(value) => onSetGateway(workspace.path, value)}
+                />
+                <ProjectSelect
                   title="Project reasoning"
-                  onClick={(event) => event.stopPropagation()}
-                  onChange={(event) => {
-                    event.stopPropagation();
-                    onSetReasoning(workspace.path, event.currentTarget.value);
-                  }}
-                >
-                  <option value="">Reasoning</option>
-                  {REASONING_OPTIONS.filter(Boolean).map((effort) => (
-                    <option key={effort} value={effort}>{effort}</option>
-                  ))}
-                </select>
+                  placeholder="Reasoning"
+                  value={workspace.defaultReasoningEffort ?? ""}
+                  options={REASONING_OPTIONS.map((effort) => ({ value: effort, label: effort || "Reasoning" }))}
+                  onChange={(value) => onSetReasoning(workspace.path, value)}
+                />
                 <IconAction title="Open project" icon={<Play size={13} />} onClick={(event) => { event.stopPropagation(); onLaunch(workspace); }} />
                 <IconAction
                   title="Project actions"
@@ -3114,6 +3130,82 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
         <div className="px-5 pb-5 text-sm text-muted">{emptyText ?? "No workspaces."}</div>
       )}
     </section>
+  );
+}
+
+function ProjectSelect({ title, placeholder, value, options, disabled, onChange }: {
+  title: string;
+  placeholder: string;
+  value: string;
+  options: Array<{ value: string; label: string }>;
+  disabled?: boolean;
+  onChange: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const selected = options.find((option) => option.value === value);
+  const display = selected?.label || placeholder;
+  const buttonRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && (buttonRef.current?.contains(target) || menuRef.current?.contains(target))) return;
+      setOpen(false);
+    };
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
+  }, [open]);
+
+  return (
+    <span className="project-select" onClick={(event) => event.stopPropagation()}>
+      <button
+        ref={buttonRef}
+        type="button"
+        title={title}
+        aria-label={title}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        disabled={disabled}
+        className={cn("project-select-trigger", open && "is-open", !selected && "is-placeholder")}
+        onClick={() => setOpen((value) => !value)}
+        onKeyDown={(event) => {
+          if (event.key === "Escape") setOpen(false);
+          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        <span>{display}</span>
+        <ChevronDown size={14} className={cn("project-select-chevron", open && "is-open")} />
+      </button>
+
+      {open ? (
+        <div ref={menuRef} className="project-select-menu" role="listbox" aria-label={title}>
+          {options.map((option) => {
+            const selectedOption = option.value === value;
+            return (
+              <button
+                key={option.value || "__empty"}
+                type="button"
+                role="option"
+                aria-selected={selectedOption}
+                className={cn("project-select-option", selectedOption && "is-selected", !option.value && "is-placeholder")}
+                onClick={() => {
+                  onChange(option.value);
+                  setOpen(false);
+                }}
+              >
+                <span>{option.label}</span>
+                {selectedOption ? <CheckCircle2 size={13} /> : null}
+              </button>
+            );
+          })}
+        </div>
+      ) : null}
+    </span>
   );
 }
 
