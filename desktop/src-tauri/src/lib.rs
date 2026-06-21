@@ -1143,14 +1143,19 @@ async fn discover_ferryllm(app: AppHandle) -> Result<String, String> {
 fn discover_ferryllm_inner(app: AppHandle) -> Result<String, String> {
     // 1. Check for bundled sidecar in resource directory
     let resource_dir = app.path().resource_dir().map_err(string_error)?;
-    let exe_name = if cfg!(windows) {
-        "ferryllm-x86_64-pc-windows-msvc.exe"
+    let bundled_names: &[&str] = if cfg!(windows) {
+        &[
+            "ferryllm-x86_64-pc-windows-gnu.exe",
+            "ferryllm-x86_64-pc-windows-msvc.exe",
+        ]
     } else {
-        "ferryllm-x86_64-unknown-linux-gnu"
+        &["ferryllm-x86_64-unknown-linux-gnu"]
     };
-    let bundled = resource_dir.join(exe_name);
-    if bundled.exists() {
-        return Ok(path_to_string(&bundled));
+    for exe_name in bundled_names {
+        let bundled = resource_dir.join(exe_name);
+        if bundled.exists() {
+            return Ok(path_to_string(&bundled));
+        }
     }
 
     // 2. Check local target/debug directory first in dev mode so the desktop
