@@ -1945,11 +1945,19 @@ function App() {
             <DashboardView
               snapshot={snapshot}
               status={status}
+              providerCount={providers.length}
+              routeCount={routes.length}
+              activeProviderName={selectedProviderConfig?.name}
+              listenAddress={valueAsString(config.server?.listen) || "127.0.0.1:3000"}
               latestSample={latestSample}
               dashboard={dashboard}
               logs={status?.logs ?? []}
               onRefresh={() => void refreshDashboard()}
+              onOpenProviders={() => setActiveView("providers")}
+              onOpenLauncher={() => setActiveView("launcher")}
+              onStartGateway={() => void startServer()}
               refreshing={dashboardBusy}
+              actionBusy={busy}
             />
           )}
 
@@ -1969,31 +1977,36 @@ function App() {
             >
               <div className="grid gap-2">
                 <section className="rounded-lg border border-border bg-surface">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-2.5">
-                    <div className="flex flex-wrap items-center gap-2">
-                      {([
-                        { value: "all" as PresetCategoryFilter, label: "All" },
-                        { value: "official" as PresetCategoryFilter, label: "Official" },
-                        { value: "aggregator" as PresetCategoryFilter, label: "Aggregator" },
-                        { value: "china" as PresetCategoryFilter, label: "CN" },
-                        { value: "local" as PresetCategoryFilter, label: "Local" },
-                      ]).map((item) => (
-                        <button
-                          key={item.value}
-                          type="button"
-                          onClick={() => setPresetFilter(item.value)}
-                          className={cn(
-                            "inline-flex h-8 items-center rounded-lg px-3 text-xs font-bold transition-colors",
-                            presetFilter === item.value
-                              ? "bg-primary text-white"
-                              : "bg-muted-soft text-muted hover:bg-border hover:text-heading"
-                          )}
-                        >
-                          {item.label}
-                        </button>
-                      ))}
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
+                    <div className="min-w-[220px]">
+                      <p className="text-xs font-bold uppercase text-primary">Provider routing matrix</p>
+                      <h1 className="mt-1 text-lg font-bold text-heading">Connect upstream providers to local model aliases.</h1>
+                      <p className="mt-1 text-sm text-muted">Presets create providers and routes that ferryllm exposes to Codex, Claude Code, OpenCode, and OpenAI-compatible clients.</p>
                     </div>
                     <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
+                      <div className="flex flex-wrap items-center gap-2">
+                        {([
+                          { value: "all" as PresetCategoryFilter, label: "All" },
+                          { value: "official" as PresetCategoryFilter, label: "Official" },
+                          { value: "aggregator" as PresetCategoryFilter, label: "Aggregator" },
+                          { value: "china" as PresetCategoryFilter, label: "CN" },
+                          { value: "local" as PresetCategoryFilter, label: "Local" },
+                        ]).map((item) => (
+                          <button
+                            key={item.value}
+                            type="button"
+                            onClick={() => setPresetFilter(item.value)}
+                            className={cn(
+                              "inline-flex h-8 items-center rounded-lg px-3 text-xs font-bold transition-colors",
+                              presetFilter === item.value
+                                ? "bg-primary text-white"
+                                : "bg-muted-soft text-muted hover:bg-border hover:text-heading"
+                            )}
+                          >
+                            {item.label}
+                          </button>
+                        ))}
+                      </div>
                       <div className="relative w-[220px] max-w-full">
                         <Search size={14} className="provider-search-icon pointer-events-none absolute top-1/2 -translate-y-1/2 text-icon" />
                         <input
@@ -2104,7 +2117,7 @@ function App() {
                   }) : providers.length ? (
                     <EmptyState compact title="No matching providers" action="Clear search" onAction={() => setProviderSearch("")} />
                   ) : (
-                    <EmptyState compact title="No providers" action="Add provider" onAction={addProvider} />
+                    <EmptyState compact title="No providers connected" action="Add provider" onAction={addProvider} />
                   )}
                 </section>
               </div>
@@ -2694,9 +2707,9 @@ function AppSidebar({
   onToggleTheme: () => void;
 }) {
   const navItems = [
-    { view: "launcher" as View, icon: <FolderOpen size={15} />, label: "Launcher" },
+    { view: "dashboard" as View, icon: <Route size={15} />, label: "Gateway" },
+    { view: "launcher" as View, icon: <FolderOpen size={15} />, label: "Launch" },
     { view: "providers" as View, icon: <Network size={15} />, label: "Providers", count: providerCount },
-    { view: "dashboard" as View, icon: <BarChart3 size={15} />, label: "Dashboard" },
     { view: "usage-logs" as View, icon: <History size={15} />, label: "Usage Logs", count: logCount },
     { view: "settings" as View, icon: <Settings size={15} />, label: "Settings" },
   ];
@@ -2704,12 +2717,12 @@ function AppSidebar({
   return (
     <aside className="app-sidebar border-r border-border bg-surface">
       <div className="px-5 py-5">
-        <button type="button" onClick={() => onSetView("launcher")} className="flex w-full items-center gap-3 text-left">
+        <button type="button" onClick={() => onSetView("dashboard")} className="flex w-full items-center gap-3 text-left">
           <img src="/logo-light.png" alt="ferryllm" className="h-8 w-8 shrink-0 dark:hidden" />
           <img src="/logo-dark.png" alt="ferryllm" className="h-8 w-8 shrink-0 hidden dark:block" />
           <span className="min-w-0">
             <strong className="block text-base font-bold text-heading">ferryllm</strong>
-            <span className="block text-xs font-semibold text-muted">LLM gateway console</span>
+            <span className="block text-xs font-semibold text-muted">Local LLM routing control plane</span>
           </span>
         </button>
       </div>
@@ -2808,9 +2821,9 @@ function LauncherView({
       <main className="min-w-0">
         <div className="launcher-hero">
           <div className="launcher-hero-copy">
-            <p className="launcher-eyebrow">Project launcher</p>
-            <h1>Launch every AI workspace through one local gateway.</h1>
-            <p>Pick a project, bind the right provider, choose reasoning, then start Codex, Claude, OpenCode, or VS Code without touching env files.</p>
+            <p className="launcher-eyebrow">Launch workbench</p>
+            <h1>Start Codex, Claude Code, and OpenCode through ferryllm.</h1>
+            <p>Pick a workspace, bind a provider route, choose reasoning, then launch your coding tool with the right local gateway environment.</p>
           </div>
           <div className="launcher-hero-actions">
             <Button variant="primary" icon={<Plus size={14} />} onClick={onCreateWorkspace}>New project</Button>
@@ -3209,9 +3222,29 @@ function ProjectSelect({ title, placeholder, value, options, disabled, onChange 
   );
 }
 
-function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefresh, refreshing }: {
+function DashboardView({
+  snapshot,
+  status,
+  providerCount,
+  routeCount,
+  activeProviderName,
+  listenAddress,
+  latestSample,
+  dashboard,
+  logs,
+  onRefresh,
+  onOpenProviders,
+  onOpenLauncher,
+  onStartGateway,
+  refreshing,
+  actionBusy,
+}: {
   snapshot: ServerSnapshot | null;
   status: ProcessStatus | null;
+  providerCount: number;
+  routeCount: number;
+  activeProviderName?: string;
+  listenAddress: string;
   latestSample: MetricSample | undefined;
   dashboard: {
     requests: number;
@@ -3226,7 +3259,11 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
   };
   logs: LogEntry[];
   onRefresh: () => void;
+  onOpenProviders: () => void;
+  onOpenLauncher: () => void;
+  onStartGateway: () => void;
   refreshing: boolean;
+  actionBusy: boolean;
 }) {
   const promptTokens = latestSample?.values.ferryllm_upstream_prompt_tokens_total ?? 0;
   const cachedTokens = latestSample?.values.ferryllm_prompt_cached_tokens_total ?? 0;
@@ -3243,6 +3280,17 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
   })();
   const recentLogs = logs.slice(-10).reverse();
   const hasDashboardData = dashboard.requests > 0 || modelRows.length > 0 || promptTokens > 0 || recentLogs.length > 0;
+  const gatewayRunning = !!status?.running;
+  const httpBase = listenAddress.startsWith("http") ? listenAddress : `http://${listenAddress}`;
+  const nextAction = !providerCount
+    ? { label: "Add provider", icon: <Network size={15} />, onClick: onOpenProviders, primary: true, disabled: false }
+    : !routeCount
+      ? { label: "Edit routes", icon: <Route size={15} />, onClick: onOpenProviders, primary: true, disabled: false }
+      : !gatewayRunning
+        ? { label: "Start gateway", icon: <Play size={15} />, onClick: onStartGateway, primary: true, disabled: actionBusy }
+        : dashboard.requests === 0
+          ? { label: "Open Launch", icon: <FolderOpen size={15} />, onClick: onOpenLauncher, primary: true, disabled: false }
+          : { label: "Refresh", icon: <RefreshCw size={15} />, onClick: onRefresh, primary: false, disabled: refreshing };
 
   return (
     <motion.div
@@ -3255,10 +3303,8 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
     >
       <section className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-xl font-bold text-heading">Dashboard</h1>
-          <p className="mt-1 text-sm text-muted">
-            {snapshot ? `Last refresh ${new Date(snapshot.fetched_at_ms).toLocaleTimeString()}` : "Waiting for the first sample"}
-          </p>
+          <h1 className="text-2xl font-bold text-heading">Gateway</h1>
+          <p className="mt-1 text-sm text-muted">Local routing for Codex, Claude Code, OpenCode, and API clients.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <ProbeBadge label={gatewayStatusLabel(status)} ok={!!status?.running} />
@@ -3273,6 +3319,33 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
             <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} /> Refresh
           </button>
         </div>
+      </section>
+
+      <section className="gateway-summary-bar">
+        <div className="gateway-summary-item">
+          <span>Endpoint</span>
+          <code>{httpBase}</code>
+        </div>
+        <div className="gateway-summary-item">
+          <span>Providers</span>
+          <strong>{providerCount}</strong>
+        </div>
+        <div className="gateway-summary-item">
+          <span>Routes</span>
+          <strong>{routeCount}</strong>
+        </div>
+        <div className="gateway-summary-item">
+          <span>Selected</span>
+          <strong>{activeProviderName || "None"}</strong>
+        </div>
+        <Button
+          variant={nextAction.primary ? "primary" : undefined}
+          icon={nextAction.icon}
+          onClick={nextAction.onClick}
+          disabled={nextAction.disabled}
+        >
+          {nextAction.label}
+        </Button>
       </section>
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-6">
@@ -3305,6 +3378,8 @@ function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefr
           metricsOk={snapshot ? !!snapshot.metrics.ok : null}
           modelsOk={snapshot ? !!snapshot.models.ok : null}
           logs={recentLogs.length}
+          providerCount={providerCount}
+          routeCount={routeCount}
         />
       ) : (
       <>
@@ -3474,8 +3549,17 @@ function UsageLogsView({ logs, launches, onBack }: { logs: LogEntry[]; launches:
   );
 }
 
-function DashboardEmptyState({ running, metricsOk, modelsOk, logs }: { running: boolean; metricsOk: boolean | null; modelsOk: boolean | null; logs: number }) {
+function DashboardEmptyState({ running, metricsOk, modelsOk, logs, providerCount, routeCount }: {
+  running: boolean;
+  metricsOk: boolean | null;
+  modelsOk: boolean | null;
+  logs: number;
+  providerCount: number;
+  routeCount: number;
+}) {
   const rows = [
+    { icon: <Network size={15} />, label: "Providers", value: providerCount ? `${providerCount} configured` : "None yet", ok: providerCount > 0 },
+    { icon: <Route size={15} />, label: "Routes", value: routeCount ? `${routeCount} model routes` : "No routes", ok: routeCount > 0 },
     { icon: <Terminal size={15} />, label: "Runtime", value: running ? "Running" : "Stopped", ok: running },
     { icon: <BarChart3 size={15} />, label: "Metrics", value: metricsOk == null ? "Waiting" : metricsOk ? "Reachable" : "Unavailable", ok: metricsOk },
     { icon: <Database size={15} />, label: "Models", value: modelsOk == null ? "Waiting" : modelsOk ? "Reachable" : "Unavailable", ok: modelsOk },
@@ -3484,15 +3568,19 @@ function DashboardEmptyState({ running, metricsOk, modelsOk, logs }: { running: 
   return (
     <section className="rounded-lg border border-border bg-surface p-6">
       <div className="mx-auto max-w-3xl text-center">
-        <Activity size={28} className="mx-auto text-icon" />
-        <h2 className="mt-3 text-base font-bold text-heading">{running ? "Waiting for traffic" : "Runtime is stopped"}</h2>
+        <Route size={28} className="mx-auto text-icon" />
+        <h2 className="mt-3 text-base font-bold text-heading">
+          {!providerCount ? "Connect a provider to make the gateway useful" : running ? "Waiting for the first routed request" : "Gateway is ready to start"}
+        </h2>
         <p className="mt-1 text-sm text-muted">
-          {running
-            ? "Charts and model rows will appear after the first request sample."
-            : "Start ferryllm from Providers or Launcher to collect metrics, models, cache data, and logs."}
+          {!providerCount
+            ? "Add an upstream provider, create a model route, then launch a coding tool through the local ferryllm endpoint."
+            : running
+              ? "Metrics, cache data, provider rows, and logs will appear once a client sends traffic through ferryllm."
+              : "Start ferryllm after saving your provider routes, then launch Codex, Claude Code, or OpenCode from the Launch workbench."}
         </p>
       </div>
-      <div className="mt-5 grid gap-2 md:grid-cols-4">
+      <div className="mt-5 grid gap-2 md:grid-cols-3 xl:grid-cols-6">
         {rows.map((row) => (
           <div key={row.label} className="flex items-center gap-3 rounded-lg border border-border bg-bg px-3 py-2.5">
             <span className={cn(

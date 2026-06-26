@@ -295,6 +295,48 @@ label > span {
   color: var(--c-sidebar-active-fg);
 }
 
+.gateway-summary-bar {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+  border: 1px solid var(--c-border);
+  border-radius: 8px;
+  background: var(--c-surface);
+  padding: 10px;
+}
+
+.gateway-summary-item {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 0;
+  gap: 2px;
+  border-radius: 7px;
+  background: var(--c-bg);
+  padding: 8px 10px;
+}
+
+.gateway-summary-item span {
+  color: var(--c-muted);
+  font-size: 11px;
+  font-weight: 900;
+  text-transform: uppercase;
+}
+
+.gateway-summary-item strong,
+.gateway-summary-item code {
+  overflow: hidden;
+  color: var(--c-heading);
+  font-size: 13px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.gateway-summary-item code {
+  font-family: var(--font-mono);
+}
+
 .launcher-shell {
   min-height: calc(100vh - 32px);
 }
@@ -839,5 +881,14 @@ label > span {
 
   .launcher-session-panel {
     max-height: none;
+  }
+
+  .gateway-summary-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .gateway-summary-item {
+    width: 100%;
   }
 }
