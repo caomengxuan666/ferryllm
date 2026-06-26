@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -53,6 +53,762 @@ import {
 } from "lucide-react";
 import { cn } from "./lib/utils";
 import "./App.css";
+
+type Locale = "en" | "zh-CN";
+type I18nKey = string;
+
+const i18n: Record<Locale, Record<I18nKey, string>> = {
+  en: {
+    "app.subtitle": "AI gateway console",
+    "nav.launcher": "Launcher",
+    "nav.providers": "Providers",
+    "nav.dashboard": "Dashboard",
+    "nav.usageLogs": "Usage Logs",
+    "nav.settings": "Settings",
+    "common.back": "Back",
+    "common.save": "Save",
+    "common.validate": "Validate",
+    "common.refresh": "Refresh",
+    "common.running": "Running",
+    "common.stopped": "Stopped",
+    "common.settings": "Settings",
+    "common.lightMode": "Light mode",
+    "common.darkMode": "Dark mode",
+    "common.language": "Language",
+    "common.gateway": "Gateway",
+    "common.provider": "Provider",
+    "common.model": "Model",
+    "common.status": "Status",
+    "common.detail": "Detail",
+    "common.time": "Time",
+    "common.type": "Type",
+    "common.enabled": "Enabled",
+    "common.disabled": "Disabled",
+    "common.planned": "Planned",
+    "common.partial": "Partial",
+    "common.notSelected": "Not selected",
+    "common.health": "Health",
+    "common.ready": "Ready",
+    "common.validation": "Validation",
+    "common.run": "Run",
+    "common.configOk": "config ok",
+    "common.notValidated": "Not validated yet.",
+    "common.external": "External",
+    "common.processStopped": "Process is stopped",
+    "common.detectedListen": "Detected on listen address",
+    "common.managedProcess": "Managed process",
+    "common.showMore": "Show more",
+    "common.collapse": "Collapse",
+    "common.hideApiKey": "Hide API key",
+    "common.showApiKey": "Show API key",
+    "common.never": "Never",
+    "common.justNow": "Just now",
+    "common.minutesAgo": "{count}m ago",
+    "common.hoursAgo": "{count}h ago",
+    "common.daysAgo": "{count}d ago",
+    "common.count": "{count}",
+    "common.watchSingular": "{count} watch",
+    "common.watchPlural": "{count} watches",
+    "common.off": "off",
+    "common.addProvider": "Add Provider",
+    "common.closeAdd": "Close add",
+    "common.searchProviders": "Search providers",
+    "providers.registry": "Provider registry",
+    "providers.configured": "Configured Providers",
+    "providers.blankCustom": "Blank custom provider",
+    "providers.noProviders": "No providers",
+    "providers.noMatching": "No matching providers",
+    "providers.clearSearch": "Clear search",
+    "providers.keySource": "Key source",
+    "providers.routes": "Routes",
+    "providers.fallbacks": "Fallbacks",
+    "providers.traffic": "Traffic",
+    "providers.directKey": "Direct key",
+    "providers.storedInConfig": "stored in config",
+    "providers.envKey": "Env key",
+    "providers.urlKey": "URL key",
+    "providers.fileKey": "File key",
+    "providers.watchedKey": "Watched key",
+    "providers.noKeySource": "No key source",
+    "providers.addKeySource": "add env, file, URL, or direct key",
+    "providers.noBaseUrl": "No base URL configured",
+    "providers.needsUrl": "Needs URL",
+    "providers.needsKey": "Needs key",
+    "providers.errorCount": "{count} errors",
+    "providers.liveTraffic": "Live traffic",
+    "providers.configuredStatus": "Configured",
+    "providers.presets": "Provider presets",
+    "providers.showMorePresets": "Show more presets",
+    "providers.collapsePresets": "Collapse presets",
+    "providers.more": "More",
+    "providers.noPresetMatch": "No presets match \"{query}\".",
+    "providers.primaryMatches": "primary matches",
+    "providers.referencingThis": "referencing this",
+    "providers.requests": "requests",
+    "providers.recommendedPreset": "Recommended preset",
+    "providers.testProvider": "Test provider",
+    "providers.queryUsage": "Query usage",
+    "providers.copyProvider": "Copy provider",
+    "providers.deleteProvider": "Delete provider",
+    "providers.unnamed": "Unnamed Provider",
+    "providers.start": "Start",
+    "providers.stop": "Stop",
+    "providers.restart": "Restart",
+    "providers.launcherHint": "Workspace launches live in Launcher.",
+    "providers.openLauncher": "Open Launcher",
+    "providers.settings": "Settings",
+    "providers.models": "Models",
+    "providers.runtime": "Runtime",
+    "providers.providerSettings": "Provider Settings",
+    "providers.providerSettingsSubtitle": "Use env, URL, file, or watched config paths for API keys.",
+    "providers.providerName": "Provider Name",
+    "providers.type": "Type",
+    "providers.baseUrl": "Base URL",
+    "providers.apiKeyDirect": "API Key (direct)",
+    "providers.apiKeyEnv": "API key env",
+    "providers.apiKeyUrl": "API key URL",
+    "providers.apiKeyFile": "API key file",
+    "providers.addKeyWatch": "Add key watch",
+    "providers.removeProvider": "Remove provider",
+    "providers.watchFile": "Watch file",
+    "providers.keyPath": "Key path",
+    "providers.urlPath": "URL path",
+    "providers.modelMappings": "Model Mappings",
+    "providers.modelMappingsSubtitle": "Client-visible model names are exact routes; upstream models are sent to this provider.",
+    "providers.customExactRoute": "Custom exact route",
+    "providers.generatedFallbackRoute": "Generated fallback route",
+    "providers.clientModelName": "Client model name",
+    "providers.upstreamModel": "Upstream model",
+    "providers.availableModels": "Available Models",
+    "providers.availableModelsSubtitle": "Fetched from the provider model endpoint when available.",
+    "providers.loading": "Loading",
+    "providers.fetchModels": "Fetch models",
+    "providers.useForClaude": "Use for Claude",
+    "providers.useForCodex": "Use for Codex",
+    "providers.addAlias": "Add alias",
+    "providers.noModelsLoaded": "No models loaded",
+    "providers.addRoute": "Add route",
+    "providers.noRoutes": "No routes",
+    "providers.empty": "Empty",
+    "providers.noProvider": "No provider",
+    "providers.fallback": "fallback",
+    "providers.routeDetails": "Route Details",
+    "providers.routeDetailsSubtitle": "Match model names, choose a provider, optionally rewrite.",
+    "providers.match": "Match",
+    "providers.matchType": "Match type",
+    "providers.rewriteModel": "Rewrite model",
+    "providers.clientKind": "Client kind",
+    "providers.fallbackProvidersCsv": "Fallback providers CSV",
+    "providers.remove": "Remove",
+    "providers.noRouteSelected": "No route selected",
+    "providers.runtimeSettings": "Runtime Settings",
+    "providers.runtimeSettingsSubtitle": "Server, access, metrics, prompt cache, and logging.",
+    "launcher.title": "Workspace launcher",
+    "launcher.projects": "Projects",
+    "launcher.search": "Search projects",
+    "launcher.newProject": "New project",
+    "launcher.open": "Open",
+    "launcher.cloneRepo": "Clone repo",
+    "launcher.noProjects": "No projects yet",
+    "launcher.noProjectsDetail": "Create or open a workspace, then launch Codex, Claude, VS Code, or resume indexed sessions from the project row.",
+    "launcher.openProject": "Open project",
+    "launcher.sessions": "Sessions",
+    "launcher.favorites": "Favorites",
+    "launcher.matchingProjects": "Matching projects",
+    "launcher.recentProjects": "Recent projects",
+    "launcher.noMatch": "No project matches this search.",
+    "launcher.noRecent": "No recent projects yet.",
+    "launcher.noWorkspaces": "No workspaces.",
+    "launcher.projectGateway": "Project gateway",
+    "launcher.projectReasoning": "Project reasoning",
+    "launcher.reasoning": "Reasoning",
+    "launcher.projectActions": "Project actions",
+    "launcher.openInCodex": "Open in Codex",
+    "launcher.openInClaude": "Open in Claude",
+    "launcher.openInOpenCode": "Open in OpenCode",
+    "launcher.openInVscode": "Open in VS Code",
+    "launcher.showInExplorer": "Show in Explorer",
+    "launcher.pin": "Pin",
+    "launcher.unpin": "Unpin",
+    "launcher.remove": "Remove from launcher",
+    "launcher.deleteDirectory": "Delete directory",
+    "launcher.refreshSessions": "Refresh sessions",
+    "launcher.resumeSession": "Resume native session",
+    "launcher.deleteSession": "Delete session file",
+    "launcher.scanningSessions": "Scanning sessions...",
+    "launcher.noNativeSessions": "No native sessions for this project.",
+    "launcher.launchTarget": "Launch this target",
+    "launcher.removeLaunch": "Remove",
+    "launcher.noPreview": "No preview available.",
+    "launcher.nativeLaunches": "native, {count} launches",
+    "launcher.nativeSessionTitle": "{tool} session",
+    "launcher.messageCount": "{count} msgs",
+    "launcher.deleteWorkspaceConfirm": "Delete this workspace directory?\n\n{path}\n\nThis removes the folder from disk and cannot be undone.",
+    "launcher.deleteSessionConfirm": "Delete this {tool} session file?\n\n{path}",
+    "launcher.selectWorkspace": "Select workspace",
+    "launcher.selectParentFolder": "Select parent folder",
+    "launcher.projectName": "Project name",
+    "dashboard.title": "Dashboard",
+    "dashboard.lastRefresh": "Last refresh {time}",
+    "dashboard.waitingSample": "Waiting for the first sample",
+    "dashboard.requests": "Requests",
+    "dashboard.success": "Success",
+    "dashboard.errors": "Errors",
+    "dashboard.upstream": "Upstream",
+    "dashboard.avgLatency": "Avg latency",
+    "dashboard.cacheHit": "Cache hit",
+    "dashboard.providerModel": "Provider / Model",
+    "dashboard.promptCache": "Prompt Cache",
+    "dashboard.recentLogs": "Recent Logs",
+    "dashboard.requestsOverTime": "Requests over time",
+    "dashboard.requestsOverTimeSubtitle": "Delta per dashboard sample",
+    "dashboard.latencyTrend": "Latency trend",
+    "dashboard.latencyTrendSubtitle": "Average latency per sample",
+    "dashboard.modelsTracked": "{count} model entries tracked",
+    "dashboard.noModelMetrics": "No labeled model metrics yet.",
+    "dashboard.cached": "Cached",
+    "dashboard.uncached": "Uncached",
+    "dashboard.hitRatio": "Hit ratio",
+    "dashboard.upstreamPromptTokens": "{count} upstream prompt tokens",
+    "dashboard.noLogs": "No logs yet.",
+    "dashboard.runtime": "Runtime",
+    "dashboard.metrics": "Metrics",
+    "dashboard.models": "Models",
+    "dashboard.logs": "Logs",
+    "dashboard.waiting": "Waiting",
+    "dashboard.reachable": "Reachable",
+    "dashboard.unavailable": "Unavailable",
+    "dashboard.waitingTraffic": "Waiting for traffic",
+    "dashboard.runtimeStopped": "Runtime is stopped",
+    "dashboard.emptyRunning": "Charts and model rows will appear after the first request sample.",
+    "dashboard.emptyStopped": "Start ferryllm from Providers or Launcher to collect metrics, models, cache data, and logs.",
+    "settings.global": "Global settings",
+    "settings.title": "Settings",
+    "settings.subtitle": "Runtime, security, cache, data, and desktop preferences.",
+    "settings.general": "General",
+    "settings.runtime": "Runtime",
+    "settings.security": "Security",
+    "settings.cache": "Cache",
+    "settings.advanced": "Advanced",
+    "settings.about": "About",
+    "settings.appearance": "Appearance",
+    "settings.appearanceSubtitle": "Theme and launcher defaults.",
+    "settings.theme": "Theme",
+    "settings.light": "Light",
+    "settings.dark": "Dark",
+    "settings.defaultLauncher": "Default launcher",
+    "settings.desktopNotifications": "Desktop notifications",
+    "settings.autoStart": "Auto start ferryllm",
+    "settings.localFiles": "Local Files",
+    "settings.localFilesSubtitle": "Executable and generated config paths.",
+    "settings.executable": "Executable",
+    "settings.configPath": "Config path",
+    "settings.routesConfigured": "{count} configured",
+    "settings.providersConfigured": "{count} configured",
+    "settings.server": "Server",
+    "settings.serverSubtitle": "Listener, limits, request pressure, and default reasoning.",
+    "settings.listen": "Listen",
+    "settings.timeoutSeconds": "Timeout seconds",
+    "settings.bodyLimitMb": "Body limit MB",
+    "settings.maxConcurrency": "Max concurrency",
+    "settings.rateMinute": "Rate/minute",
+    "settings.reasoningPolicy": "Reasoning policy",
+    "settings.defaultReasoning": "Default reasoning",
+    "settings.maxReasoning": "Max reasoning",
+    "settings.reliability": "Reliability",
+    "settings.reliabilitySubtitle": "Retry and circuit breaker defaults.",
+    "settings.retryAttempts": "Retry attempts",
+    "settings.retryBackoffMs": "Retry backoff ms",
+    "settings.circuitFailures": "Circuit failures",
+    "settings.circuitCooldown": "Circuit cooldown",
+    "settings.loggingMetrics": "Logging & Metrics",
+    "settings.loggingMetricsSubtitle": "Local logs and Prometheus endpoint.",
+    "settings.logLevel": "Log level",
+    "settings.logFormat": "Log format",
+    "settings.ansiLogs": "ANSI logs",
+    "settings.metricsEnabled": "Metrics enabled",
+    "settings.dashboardRefresh": "Dashboard refresh",
+    "settings.accessControl": "Access Control",
+    "settings.accessControlSubtitle": "Optional local auth and per-key pressure controls.",
+    "settings.authEnabled": "Auth enabled",
+    "settings.apiKeysEnv": "API keys env",
+    "settings.perKeyRate": "Per-key rate/minute",
+    "settings.perKeyConcurrency": "Per-key concurrency",
+    "settings.secrets": "Secrets",
+    "settings.secretsSubtitle": "Key handling status for this desktop session.",
+    "settings.directKeyInput": "Direct key input",
+    "settings.maskedDefault": "Masked by default",
+    "settings.autosaveDirectKeys": "Autosave direct keys",
+    "settings.excluded": "Excluded",
+    "settings.runnableConfig": "Runnable config",
+    "settings.explicitSaveStart": "Explicit Save/Start only",
+    "settings.providerKeySources": "Provider key sources",
+    "settings.ready": "ready",
+    "settings.credentialVault": "Credential vault",
+    "settings.promptCacheSubtitle": "Anthropic cache control and OpenAI prompt-cache hints.",
+    "settings.anthropicCacheControl": "Anthropic cache control",
+    "settings.cacheSystem": "Cache system",
+    "settings.cacheTools": "Cache tools",
+    "settings.cacheLastUser": "Cache last user",
+    "settings.debugShape": "Debug shape",
+    "settings.logRelocatedText": "Log relocated text",
+    "settings.openaiCacheKey": "OpenAI cache key",
+    "settings.retention": "Retention",
+    "settings.relocateByteRange": "Relocate byte range",
+    "settings.stripPrefixesCsv": "Strip prefixes CSV",
+    "settings.dataSync": "Data & Sync",
+    "settings.dataSyncSubtitle": "Config movement and backup entry points.",
+    "settings.importConfig": "Import config",
+    "settings.exportConfig": "Export config",
+    "settings.backupRollback": "Backup & rollback",
+    "settings.backupRollbackDetail": "Save uses .bak rollback",
+    "settings.webdavSync": "WebDAV sync",
+    "settings.providerTooling": "Provider Tooling",
+    "settings.providerToolingSubtitle": "Operational controls planned around providers.",
+    "settings.usageAdapters": "Usage adapters",
+    "settings.usageAdaptersDetail": "Provider cards can probe common endpoints",
+    "settings.modelFetchDropdown": "Model fetch dropdown",
+    "settings.failoverQueueEditor": "Failover queue editor",
+    "settings.globalOutboundProxy": "Global outbound proxy",
+    "settings.validationSubtitle": "Result from ferryllm config validation.",
+    "settings.launches": "Launches",
+    "settings.desktopSubtitle": "Local control panel for provider routing and launcher workflows.",
+    "usage.activity": "Gateway activity",
+    "usage.title": "Usage Logs",
+    "usage.subtitle": "{count} recent events from runtime logs and launcher history.",
+    "usage.events": "Events",
+    "usage.runtimeLogs": "Runtime logs",
+    "usage.launches": "Launches",
+    "usage.recentActivity": "Recent Activity",
+    "usage.recentActivitySubtitle": "Local gateway and launcher events",
+    "usage.modelTool": "Model / Tool",
+    "usage.noEvents": "No usage events yet.",
+    "toast.savedHotReloaded": "Saved & hot reloaded",
+    "toast.savedValidated": "Saved & validated",
+    "toast.gatewayExternal": "Gateway is running outside this window",
+    "toast.ferryStopped": "ferryllm stopped",
+    "toast.gatewayStartFailed": "Gateway failed to start",
+    "toast.gatewayDetected": "Detected existing ferryllm gateway",
+    "toast.gatewayStarted": "Gateway started",
+    "toast.configValid": "Config is valid",
+    "toast.ferryStarted": "ferryllm started",
+    "toast.ferryRestarted": "ferryllm restarted",
+    "toast.addProviderBeforeWorkspace": "Add a provider before launching a workspace",
+    "toast.addProviderBeforeSession": "Add a provider before resuming a session",
+    "toast.workspaceDeleted": "Workspace directory deleted",
+    "toast.sessionDeleted": "Session deleted",
+    "toast.workspaceAdded": "Workspace added",
+    "toast.projectCreated": "Project created",
+    "toast.invalidProjectName": "Project name contains invalid path characters",
+    "toast.launched": "{target} launched",
+    "toast.sessionResumed": "{tool} session resumed",
+    "toast.providerExists": "{provider} already exists",
+    "toast.providerConnectionOk": "{provider} connection ok",
+    "toast.providerTestFailed": "{provider} test failed",
+    "toast.providerUsageOk": "{provider} usage endpoint responded",
+    "toast.providerUsageMissing": "{provider} usage endpoint not found",
+    "toast.providerModelsMissing": "{provider} model endpoint not found",
+    "toast.modelsLoaded": "{count} models loaded",
+    "toast.providerModelsOk": "{provider} model endpoint responded",
+    "doctor.providersNamed": "Providers named",
+    "doctor.keySources": "Key sources",
+    "doctor.routesAssigned": "Routes assigned",
+    "doctor.runtimeProbes": "Runtime probes",
+    "doctor.duplicate": "duplicate",
+    "doctor.routes": "routes",
+    "doctor.route": "route",
+    "doctor.serverStopped": "server stopped",
+    "doctor.title": "Doctor",
+    "doctor.ok": "ok",
+    "doctor.passed": "Doctor passed",
+  },
+  "zh-CN": {
+    "app.subtitle": "AI 网关控制台",
+    "nav.launcher": "启动器",
+    "nav.providers": "供应商",
+    "nav.dashboard": "仪表盘",
+    "nav.usageLogs": "使用日志",
+    "nav.settings": "设置",
+    "common.back": "返回",
+    "common.save": "保存",
+    "common.validate": "校验",
+    "common.refresh": "刷新",
+    "common.running": "运行中",
+    "common.stopped": "已停止",
+    "common.settings": "设置",
+    "common.lightMode": "浅色模式",
+    "common.darkMode": "深色模式",
+    "common.language": "语言",
+    "common.gateway": "网关",
+    "common.provider": "供应商",
+    "common.model": "模型",
+    "common.status": "状态",
+    "common.detail": "详情",
+    "common.time": "时间",
+    "common.type": "类型",
+    "common.enabled": "已启用",
+    "common.disabled": "已禁用",
+    "common.planned": "计划中",
+    "common.partial": "部分完成",
+    "common.notSelected": "未选择",
+    "common.health": "健康",
+    "common.ready": "就绪",
+    "common.validation": "校验",
+    "common.run": "运行",
+    "common.configOk": "配置正常",
+    "common.notValidated": "尚未校验。",
+    "common.external": "外部进程",
+    "common.processStopped": "进程已停止",
+    "common.detectedListen": "已在监听地址检测到",
+    "common.managedProcess": "托管进程",
+    "common.showMore": "显示更多",
+    "common.collapse": "收起",
+    "common.hideApiKey": "隐藏 API 密钥",
+    "common.showApiKey": "显示 API 密钥",
+    "common.never": "从未",
+    "common.justNow": "刚刚",
+    "common.minutesAgo": "{count} 分钟前",
+    "common.hoursAgo": "{count} 小时前",
+    "common.daysAgo": "{count} 天前",
+    "common.count": "{count}",
+    "common.watchSingular": "{count} 个监听",
+    "common.watchPlural": "{count} 个监听",
+    "common.off": "关闭",
+    "common.addProvider": "添加供应商",
+    "common.closeAdd": "收起添加",
+    "common.searchProviders": "搜索供应商",
+    "providers.registry": "供应商注册表",
+    "providers.configured": "已配置供应商",
+    "providers.blankCustom": "空白自定义供应商",
+    "providers.noProviders": "暂无供应商",
+    "providers.noMatching": "没有匹配的供应商",
+    "providers.clearSearch": "清空搜索",
+    "providers.keySource": "密钥来源",
+    "providers.routes": "路由",
+    "providers.fallbacks": "回退",
+    "providers.traffic": "流量",
+    "providers.directKey": "直接密钥",
+    "providers.storedInConfig": "存储在配置中",
+    "providers.envKey": "环境变量密钥",
+    "providers.urlKey": "URL 密钥",
+    "providers.fileKey": "文件密钥",
+    "providers.watchedKey": "监听密钥",
+    "providers.noKeySource": "无密钥来源",
+    "providers.addKeySource": "添加环境变量、文件、URL 或直接密钥",
+    "providers.noBaseUrl": "未配置基础 URL",
+    "providers.needsUrl": "需要 URL",
+    "providers.needsKey": "需要密钥",
+    "providers.errorCount": "{count} 个错误",
+    "providers.liveTraffic": "有实时流量",
+    "providers.configuredStatus": "已配置",
+    "providers.presets": "供应商预设",
+    "providers.showMorePresets": "显示更多预设",
+    "providers.collapsePresets": "收起预设",
+    "providers.more": "更多",
+    "providers.noPresetMatch": "没有匹配 \"{query}\" 的预设。",
+    "providers.primaryMatches": "主匹配",
+    "providers.referencingThis": "引用此项",
+    "providers.requests": "请求",
+    "providers.recommendedPreset": "推荐预设",
+    "providers.testProvider": "测试供应商",
+    "providers.queryUsage": "查询用量",
+    "providers.copyProvider": "复制供应商",
+    "providers.deleteProvider": "删除供应商",
+    "providers.unnamed": "未命名供应商",
+    "providers.start": "启动",
+    "providers.stop": "停止",
+    "providers.restart": "重启",
+    "providers.launcherHint": "工作区启动记录在启动器中管理。",
+    "providers.openLauncher": "打开启动器",
+    "providers.settings": "设置",
+    "providers.models": "模型",
+    "providers.runtime": "运行时",
+    "providers.providerSettings": "供应商设置",
+    "providers.providerSettingsSubtitle": "使用环境变量、URL、文件或监听配置路径提供 API 密钥。",
+    "providers.providerName": "供应商名称",
+    "providers.type": "类型",
+    "providers.baseUrl": "基础 URL",
+    "providers.apiKeyDirect": "API 密钥（直接）",
+    "providers.apiKeyEnv": "API 密钥环境变量",
+    "providers.apiKeyUrl": "API 密钥 URL",
+    "providers.apiKeyFile": "API 密钥文件",
+    "providers.addKeyWatch": "添加密钥监听",
+    "providers.removeProvider": "移除供应商",
+    "providers.watchFile": "监听文件",
+    "providers.keyPath": "密钥路径",
+    "providers.urlPath": "URL 路径",
+    "providers.modelMappings": "模型映射",
+    "providers.modelMappingsSubtitle": "客户端可见模型名是精确路由；上游模型会发送给此供应商。",
+    "providers.customExactRoute": "自定义精确路由",
+    "providers.generatedFallbackRoute": "生成的回退路由",
+    "providers.clientModelName": "客户端模型名",
+    "providers.upstreamModel": "上游模型",
+    "providers.availableModels": "可用模型",
+    "providers.availableModelsSubtitle": "可用时从供应商模型端点获取。",
+    "providers.loading": "加载中",
+    "providers.fetchModels": "获取模型",
+    "providers.useForClaude": "用于 Claude",
+    "providers.useForCodex": "用于 Codex",
+    "providers.addAlias": "添加别名",
+    "providers.noModelsLoaded": "尚未加载模型",
+    "providers.addRoute": "添加路由",
+    "providers.noRoutes": "暂无路由",
+    "providers.empty": "空",
+    "providers.noProvider": "无供应商",
+    "providers.fallback": "回退",
+    "providers.routeDetails": "路由详情",
+    "providers.routeDetailsSubtitle": "匹配模型名、选择供应商，并可选重写。",
+    "providers.match": "匹配",
+    "providers.matchType": "匹配类型",
+    "providers.rewriteModel": "重写模型",
+    "providers.clientKind": "客户端类型",
+    "providers.fallbackProvidersCsv": "回退供应商 CSV",
+    "providers.remove": "移除",
+    "providers.noRouteSelected": "未选择路由",
+    "providers.runtimeSettings": "运行时设置",
+    "providers.runtimeSettingsSubtitle": "服务器、访问、指标、提示词缓存和日志。",
+    "launcher.title": "工作区启动器",
+    "launcher.projects": "项目",
+    "launcher.search": "搜索项目",
+    "launcher.newProject": "新建项目",
+    "launcher.open": "打开",
+    "launcher.cloneRepo": "克隆仓库",
+    "launcher.noProjects": "暂无项目",
+    "launcher.noProjectsDetail": "创建或打开工作区后，可从项目行启动 Codex、Claude、VS Code，或恢复已索引的会话。",
+    "launcher.openProject": "打开项目",
+    "launcher.sessions": "会话",
+    "launcher.favorites": "收藏",
+    "launcher.matchingProjects": "匹配项目",
+    "launcher.recentProjects": "最近项目",
+    "launcher.noMatch": "没有匹配的项目。",
+    "launcher.noRecent": "暂无最近项目。",
+    "launcher.noWorkspaces": "暂无工作区。",
+    "launcher.projectGateway": "项目网关",
+    "launcher.projectReasoning": "项目推理",
+    "launcher.reasoning": "推理",
+    "launcher.projectActions": "项目操作",
+    "launcher.openInCodex": "在 Codex 中打开",
+    "launcher.openInClaude": "在 Claude 中打开",
+    "launcher.openInOpenCode": "在 OpenCode 中打开",
+    "launcher.openInVscode": "在 VS Code 中打开",
+    "launcher.showInExplorer": "在资源管理器中显示",
+    "launcher.pin": "置顶",
+    "launcher.unpin": "取消置顶",
+    "launcher.remove": "从启动器移除",
+    "launcher.deleteDirectory": "删除目录",
+    "launcher.refreshSessions": "刷新会话",
+    "launcher.resumeSession": "恢复原生会话",
+    "launcher.deleteSession": "删除会话文件",
+    "launcher.scanningSessions": "正在扫描会话...",
+    "launcher.noNativeSessions": "此项目暂无原生会话。",
+    "launcher.launchTarget": "启动此目标",
+    "launcher.removeLaunch": "移除",
+    "launcher.noPreview": "暂无预览。",
+    "launcher.nativeLaunches": "原生，{count} 次启动",
+    "launcher.nativeSessionTitle": "{tool} 会话",
+    "launcher.messageCount": "{count} 条消息",
+    "launcher.deleteWorkspaceConfirm": "删除这个工作区目录？\n\n{path}\n\n这会从磁盘删除该文件夹，且无法撤销。",
+    "launcher.deleteSessionConfirm": "删除这个 {tool} 会话文件？\n\n{path}",
+    "launcher.selectWorkspace": "选择工作区",
+    "launcher.selectParentFolder": "选择父文件夹",
+    "launcher.projectName": "项目名称",
+    "dashboard.title": "仪表盘",
+    "dashboard.lastRefresh": "上次刷新 {time}",
+    "dashboard.waitingSample": "等待第一条采样",
+    "dashboard.requests": "请求",
+    "dashboard.success": "成功率",
+    "dashboard.errors": "错误",
+    "dashboard.upstream": "上游",
+    "dashboard.avgLatency": "平均延迟",
+    "dashboard.cacheHit": "缓存命中",
+    "dashboard.providerModel": "供应商 / 模型",
+    "dashboard.promptCache": "提示词缓存",
+    "dashboard.recentLogs": "最近日志",
+    "dashboard.requestsOverTime": "请求趋势",
+    "dashboard.requestsOverTimeSubtitle": "每次仪表盘采样的增量",
+    "dashboard.latencyTrend": "延迟趋势",
+    "dashboard.latencyTrendSubtitle": "每次采样的平均延迟",
+    "dashboard.modelsTracked": "已跟踪 {count} 个模型条目",
+    "dashboard.noModelMetrics": "暂无带标签的模型指标。",
+    "dashboard.cached": "已缓存",
+    "dashboard.uncached": "未缓存",
+    "dashboard.hitRatio": "命中率",
+    "dashboard.upstreamPromptTokens": "{count} 个上游提示词 token",
+    "dashboard.noLogs": "暂无日志。",
+    "dashboard.runtime": "运行时",
+    "dashboard.metrics": "指标",
+    "dashboard.models": "模型",
+    "dashboard.logs": "日志",
+    "dashboard.waiting": "等待中",
+    "dashboard.reachable": "可访问",
+    "dashboard.unavailable": "不可用",
+    "dashboard.waitingTraffic": "等待流量",
+    "dashboard.runtimeStopped": "运行时已停止",
+    "dashboard.emptyRunning": "首次请求采样后会显示图表和模型行。",
+    "dashboard.emptyStopped": "从供应商或启动器启动 ferryllm 后，将收集指标、模型、缓存数据和日志。",
+    "settings.global": "全局设置",
+    "settings.title": "设置",
+    "settings.subtitle": "运行时、安全、缓存、数据和桌面偏好设置。",
+    "settings.general": "通用",
+    "settings.runtime": "运行时",
+    "settings.security": "安全",
+    "settings.cache": "缓存",
+    "settings.advanced": "高级",
+    "settings.about": "关于",
+    "settings.appearance": "外观",
+    "settings.appearanceSubtitle": "主题和启动器默认项。",
+    "settings.theme": "主题",
+    "settings.light": "浅色",
+    "settings.dark": "深色",
+    "settings.defaultLauncher": "默认启动器",
+    "settings.desktopNotifications": "桌面通知",
+    "settings.autoStart": "自动启动 ferryllm",
+    "settings.localFiles": "本地文件",
+    "settings.localFilesSubtitle": "可执行文件和生成的配置路径。",
+    "settings.executable": "可执行文件",
+    "settings.configPath": "配置路径",
+    "settings.routesConfigured": "已配置 {count} 个",
+    "settings.providersConfigured": "已配置 {count} 个",
+    "settings.server": "服务器",
+    "settings.serverSubtitle": "监听地址、限制、请求压力和默认推理。",
+    "settings.listen": "监听",
+    "settings.timeoutSeconds": "超时秒数",
+    "settings.bodyLimitMb": "请求体限制 MB",
+    "settings.maxConcurrency": "最大并发",
+    "settings.rateMinute": "每分钟速率",
+    "settings.reasoningPolicy": "推理策略",
+    "settings.defaultReasoning": "默认推理",
+    "settings.maxReasoning": "最大推理",
+    "settings.reliability": "可靠性",
+    "settings.reliabilitySubtitle": "重试和熔断默认值。",
+    "settings.retryAttempts": "重试次数",
+    "settings.retryBackoffMs": "重试退避 ms",
+    "settings.circuitFailures": "熔断失败次数",
+    "settings.circuitCooldown": "熔断冷却",
+    "settings.loggingMetrics": "日志与指标",
+    "settings.loggingMetricsSubtitle": "本地日志和 Prometheus 端点。",
+    "settings.logLevel": "日志级别",
+    "settings.logFormat": "日志格式",
+    "settings.ansiLogs": "ANSI 日志",
+    "settings.metricsEnabled": "启用指标",
+    "settings.dashboardRefresh": "仪表盘刷新",
+    "settings.accessControl": "访问控制",
+    "settings.accessControlSubtitle": "可选本地认证和单密钥压力控制。",
+    "settings.authEnabled": "启用认证",
+    "settings.apiKeysEnv": "API keys 环境变量",
+    "settings.perKeyRate": "单密钥每分钟速率",
+    "settings.perKeyConcurrency": "单密钥并发",
+    "settings.secrets": "密钥",
+    "settings.secretsSubtitle": "此桌面会话的密钥处理状态。",
+    "settings.directKeyInput": "直接密钥输入",
+    "settings.maskedDefault": "默认隐藏",
+    "settings.autosaveDirectKeys": "自动保存直接密钥",
+    "settings.excluded": "已排除",
+    "settings.runnableConfig": "可运行配置",
+    "settings.explicitSaveStart": "仅显式保存/启动",
+    "settings.providerKeySources": "供应商密钥来源",
+    "settings.ready": "就绪",
+    "settings.credentialVault": "凭据保险箱",
+    "settings.promptCacheSubtitle": "Anthropic 缓存控制和 OpenAI 提示词缓存提示。",
+    "settings.anthropicCacheControl": "Anthropic 缓存控制",
+    "settings.cacheSystem": "缓存 system",
+    "settings.cacheTools": "缓存 tools",
+    "settings.cacheLastUser": "缓存最后用户消息",
+    "settings.debugShape": "调试结构",
+    "settings.logRelocatedText": "记录重定位文本",
+    "settings.openaiCacheKey": "OpenAI 缓存键",
+    "settings.retention": "保留策略",
+    "settings.relocateByteRange": "重定位字节范围",
+    "settings.stripPrefixesCsv": "剥离前缀 CSV",
+    "settings.dataSync": "数据与同步",
+    "settings.dataSyncSubtitle": "配置迁移和备份入口。",
+    "settings.importConfig": "导入配置",
+    "settings.exportConfig": "导出配置",
+    "settings.backupRollback": "备份与回滚",
+    "settings.backupRollbackDetail": "保存时使用 .bak 回滚",
+    "settings.webdavSync": "WebDAV 同步",
+    "settings.providerTooling": "供应商工具",
+    "settings.providerToolingSubtitle": "围绕供应商规划的运维控制。",
+    "settings.usageAdapters": "用量适配器",
+    "settings.usageAdaptersDetail": "供应商卡片可探测常见端点",
+    "settings.modelFetchDropdown": "模型拉取下拉框",
+    "settings.failoverQueueEditor": "故障转移队列编辑器",
+    "settings.globalOutboundProxy": "全局出站代理",
+    "settings.validationSubtitle": "ferryllm 配置校验结果。",
+    "settings.launches": "启动记录",
+    "settings.desktopSubtitle": "用于供应商路由和启动器工作流的本地控制面板。",
+    "usage.activity": "网关活动",
+    "usage.title": "使用日志",
+    "usage.subtitle": "来自运行时日志和启动历史的 {count} 条最近事件。",
+    "usage.events": "事件",
+    "usage.runtimeLogs": "运行时日志",
+    "usage.launches": "启动",
+    "usage.recentActivity": "最近活动",
+    "usage.recentActivitySubtitle": "本地网关和启动器事件",
+    "usage.modelTool": "模型 / 工具",
+    "usage.noEvents": "暂无使用事件。",
+    "toast.savedHotReloaded": "已保存并热重载",
+    "toast.savedValidated": "已保存并校验",
+    "toast.gatewayExternal": "网关正在此窗口外运行",
+    "toast.ferryStopped": "ferryllm 已停止",
+    "toast.gatewayStartFailed": "网关启动失败",
+    "toast.gatewayDetected": "检测到现有 ferryllm 网关",
+    "toast.gatewayStarted": "网关已启动",
+    "toast.configValid": "配置有效",
+    "toast.ferryStarted": "ferryllm 已启动",
+    "toast.ferryRestarted": "ferryllm 已重启",
+    "toast.addProviderBeforeWorkspace": "启动工作区前请先添加供应商",
+    "toast.addProviderBeforeSession": "恢复会话前请先添加供应商",
+    "toast.workspaceDeleted": "工作区目录已删除",
+    "toast.sessionDeleted": "会话已删除",
+    "toast.workspaceAdded": "工作区已添加",
+    "toast.projectCreated": "项目已创建",
+    "toast.invalidProjectName": "项目名称包含无效路径字符",
+    "toast.launched": "{target} 已启动",
+    "toast.sessionResumed": "{tool} 会话已恢复",
+    "toast.providerExists": "{provider} 已存在",
+    "toast.providerConnectionOk": "{provider} 连接正常",
+    "toast.providerTestFailed": "{provider} 测试失败",
+    "toast.providerUsageOk": "{provider} 用量端点已响应",
+    "toast.providerUsageMissing": "{provider} 用量端点未找到",
+    "toast.providerModelsMissing": "{provider} 模型端点未找到",
+    "toast.modelsLoaded": "已加载 {count} 个模型",
+    "toast.providerModelsOk": "{provider} 模型端点已响应",
+    "doctor.providersNamed": "供应商命名",
+    "doctor.keySources": "密钥来源",
+    "doctor.routesAssigned": "路由分配",
+    "doctor.runtimeProbes": "运行时探测",
+    "doctor.duplicate": "重复",
+    "doctor.routes": "条路由",
+    "doctor.route": "条路由",
+    "doctor.serverStopped": "服务器已停止",
+    "doctor.title": "检查",
+    "doctor.ok": "正常",
+    "doctor.passed": "检查通过",
+  },
+};
+
+type I18nContextValue = {
+  locale: Locale;
+  setLocale: (locale: Locale) => void;
+  t: (key: I18nKey) => string;
+  tf: (key: I18nKey, values: Record<string, string | number>) => string;
+};
+
+const I18nContext = createContext<I18nContextValue>({
+  locale: "en",
+  setLocale: () => undefined,
+  t: (key) => i18n.en[key] ?? key,
+  tf: (key, values) => formatI18n(i18n.en[key] ?? key, values),
+});
+
+function useI18n() {
+  return useContext(I18nContext);
+}
+
+function formatI18n(template: string, values: Record<string, string | number>) {
+  return template.replace(/\{(\w+)\}/g, (_, key: string) => String(values[key] ?? `{${key}}`));
+}
 
 /* ── Types ─────────────────────────────────────────────────────────── */
 
@@ -126,9 +882,9 @@ type ServerSnapshot = {
   fetched_at_ms: number;
 };
 
-function gatewayStatusLabel(status?: ProcessStatus | null) {
-  if (!status?.running) return "Stopped";
-  return status.source === "external" ? "External" : "Running";
+function gatewayStatusLabelKey(status?: ProcessStatus | null) {
+  if (!status?.running) return "common.stopped";
+  return status.source === "external" ? "common.external" : "common.running";
 }
 
 function gatewayStatusTone(status?: ProcessStatus | null): "success" | "warning" | "muted" {
@@ -136,10 +892,10 @@ function gatewayStatusTone(status?: ProcessStatus | null): "success" | "warning"
   return status.source === "external" ? "warning" : "success";
 }
 
-function gatewayStatusDetail(status?: ProcessStatus | null) {
-  if (!status?.running) return "Process is stopped";
-  if (status.source === "external") return "Detected on listen address";
-  return status.pid ? `PID ${status.pid}` : "Managed process";
+function gatewayStatusDetailText(status: ProcessStatus | null | undefined, t: (key: string) => string) {
+  if (!status?.running) return t("common.processStopped");
+  if (status.source === "external") return t("common.detectedListen");
+  return status.pid ? `PID ${status.pid}` : t("common.managedProcess");
 }
 
 function commandResultMessage(result: CommandResult) {
@@ -659,7 +1415,7 @@ function uniqueName(base: string, existing: Set<string>): string {
   return `${clean}-${index}`;
 }
 
-type ProviderKeyInfo = { label: string; detail: string; ok: boolean };
+type ProviderKeyInfo = { labelKey: string; detailKey?: string; detail?: string; detailCount?: number; ok: boolean };
 type ProviderSummary = {
   key: ProviderKeyInfo;
   routeCount: number;
@@ -667,7 +1423,8 @@ type ProviderSummary = {
   requests: number;
   errors: number;
   status: "live" | "configured" | "attention";
-  statusLabel: string;
+  statusLabelKey: string;
+  statusLabelCount?: number;
 };
 
 function providerInitial(provider: Pick<ProviderConfig, "name" | "type">): string {
@@ -873,12 +1630,23 @@ function ProviderLogo({
 }
 
 function providerKeyInfo(provider: ProviderConfig): ProviderKeyInfo {
-  if (provider.api_key) return { label: "Direct key", detail: "stored in config", ok: true };
-  if (provider.api_key_env) return { label: "Env key", detail: provider.api_key_env, ok: true };
-  if (provider.api_key_url) return { label: "URL key", detail: provider.api_key_url, ok: true };
-  if (provider.api_key_file) return { label: "File key", detail: provider.api_key_file, ok: true };
-  if (provider.key_watch?.length) return { label: "Watched key", detail: `${provider.key_watch.length} watch${provider.key_watch.length === 1 ? "" : "es"}`, ok: true };
-  return { label: "No key source", detail: "add env, file, URL, or direct key", ok: false };
+  if (provider.api_key) return { labelKey: "providers.directKey", detailKey: "providers.storedInConfig", ok: true };
+  if (provider.api_key_env) return { labelKey: "providers.envKey", detail: provider.api_key_env, ok: true };
+  if (provider.api_key_url) return { labelKey: "providers.urlKey", detail: provider.api_key_url, ok: true };
+  if (provider.api_key_file) return { labelKey: "providers.fileKey", detail: provider.api_key_file, ok: true };
+  if (provider.key_watch?.length) return { labelKey: "providers.watchedKey", detailKey: provider.key_watch.length === 1 ? "common.watchSingular" : "common.watchPlural", detailCount: provider.key_watch.length, ok: true };
+  return { labelKey: "providers.noKeySource", detailKey: "providers.addKeySource", ok: false };
+}
+
+function providerKeyLabel(info: ProviderKeyInfo, t: (key: string) => string) {
+  return t(info.labelKey);
+}
+
+function providerKeyDetail(info: ProviderKeyInfo, t: (key: string) => string, tf: (key: string, values: Record<string, string | number>) => string) {
+  if (info.detail) return info.detail;
+  if (info.detailKey && typeof info.detailCount === "number") return tf(info.detailKey, { count: info.detailCount });
+  if (info.detailKey) return t(info.detailKey);
+  return "";
 }
 
 function parseProviderModels(body: string): string[] {
@@ -972,16 +1740,16 @@ function buildWorkspaces(launches: RecentLaunch[], pinnedPaths: Set<string>, bin
     .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.lastUsed - a.lastUsed || a.name.localeCompare(b.name));
 }
 
-function formatRelativeTime(ts: number): string {
-  if (!ts) return "Never";
+function formatRelativeTime(ts: number, t: (key: string) => string, tf: (key: string, values: Record<string, string | number>) => string): string {
+  if (!ts) return t("common.never");
   const diff = Date.now() - ts;
   const minute = 60_000;
   const hour = 60 * minute;
   const day = 24 * hour;
-  if (diff < minute) return "Just now";
-  if (diff < hour) return `${Math.floor(diff / minute)}m ago`;
-  if (diff < day) return `${Math.floor(diff / hour)}h ago`;
-  if (diff < day * 7) return `${Math.floor(diff / day)}d ago`;
+  if (diff < minute) return t("common.justNow");
+  if (diff < hour) return tf("common.minutesAgo", { count: Math.floor(diff / minute) });
+  if (diff < day) return tf("common.hoursAgo", { count: Math.floor(diff / hour) });
+  if (diff < day * 7) return tf("common.daysAgo", { count: Math.floor(diff / day) });
   return new Date(ts).toLocaleDateString();
 }
 
@@ -993,16 +1761,16 @@ function buildProviderSummary(provider: ProviderConfig, routes: RouteConfig[], l
   const errors = modelRows.reduce((sum, row) => sum + row.errors, 0);
   const key = providerKeyInfo(provider);
   const status = !provider.base_url || !key.ok || errors > 0 ? "attention" : requests > 0 ? "live" : "configured";
-  const statusLabel = !provider.base_url
-    ? "Needs URL"
+  const statusLabelKey = !provider.base_url
+    ? "providers.needsUrl"
     : !key.ok
-      ? "Needs key"
+      ? "providers.needsKey"
       : errors > 0
-        ? `${fmtInt(errors)} errors`
+        ? "providers.errorCount"
         : requests > 0
-          ? "Live traffic"
-          : "Configured";
-  return { key, routeCount: ownedRoutes.length, fallbackCount: fallbackRoutes.length, requests, errors, status, statusLabel };
+          ? "providers.liveTraffic"
+          : "providers.configuredStatus";
+  return { key, routeCount: ownedRoutes.length, fallbackCount: fallbackRoutes.length, requests, errors, status, statusLabelKey, statusLabelCount: errors || undefined };
 }
 
 /* ── Animated card wrapper ─────────────────────────────────────────── */
@@ -1071,6 +1839,11 @@ function App() {
     if (s) return s === "dark";
     return window.matchMedia("(prefers-color-scheme: dark)").matches;
   });
+  const [locale, setLocaleState] = useState<Locale>(() => {
+    const saved = localStorage.getItem("ferryllm-locale");
+    if (saved === "zh-CN" || saved === "en") return saved;
+    return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+  });
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [recentLaunches, setRecentLaunches] = useState<RecentLaunch[]>(() => {
     try { return JSON.parse(localStorage.getItem("ferryllm-launches") || "[]"); } catch { return []; }
@@ -1089,11 +1862,26 @@ function App() {
   const [providerSearch, setProviderSearch] = useState("");
   const [presetFilter, setPresetFilter] = useState<PresetCategoryFilter>("all");
   const [presetsExpanded, setPresetsExpanded] = useState(false);
+  const [addingProvider, setAddingProvider] = useState(false);
   const [providerModelCatalog, setProviderModelCatalog] = useState<Record<string, string[]>>(() => {
     try { return JSON.parse(localStorage.getItem("ferryllm-provider-models") || "{}"); } catch { return {}; }
   });
   const [modelProbeBusy, setModelProbeBusy] = useState(false);
   const toastId = useRef(0);
+  const i18nValue = useMemo<I18nContextValue>(() => {
+    const setLocale = (nextLocale: Locale) => {
+      setLocaleState(nextLocale);
+      localStorage.setItem("ferryllm-locale", nextLocale);
+    };
+    return {
+      locale,
+      setLocale,
+      t: (key) => i18n[locale][key] ?? i18n.en[key] ?? key,
+      tf: (key, values) => formatI18n(i18n[locale][key] ?? i18n.en[key] ?? key, values),
+    };
+  }, [locale]);
+  const t = i18nValue.t;
+  const tf = i18nValue.tf;
 
   const providers = config.providers ?? [];
   const routes = config.routes ?? [];
@@ -1148,12 +1936,12 @@ function App() {
     const keyedProviders = providers.filter((provider) => providerKeyInfo(provider).ok).length;
     const routedProviders = new Set(routes.map((route) => route.provider).filter(Boolean)).size;
     return [
-      { label: "Providers named", ok: providers.length > 0 && duplicateNames === 0, detail: duplicateNames ? `${duplicateNames} duplicate` : `${namedProviders.length}/${providers.length}` },
-      { label: "Key sources", ok: providers.length > 0 && keyedProviders === providers.length, detail: `${keyedProviders}/${providers.length || 0}` },
-      { label: "Routes assigned", ok: routes.length > 0 && routedProviders > 0, detail: `${routes.length} route${routes.length === 1 ? "" : "s"}` },
-      { label: "Runtime probes", ok: Boolean(status?.running), detail: status?.running ? `PID ${status.pid ?? "-"}` : "server stopped" },
+      { label: t("doctor.providersNamed"), ok: providers.length > 0 && duplicateNames === 0, detail: duplicateNames ? `${duplicateNames} ${t("doctor.duplicate")}` : `${namedProviders.length}/${providers.length}` },
+      { label: t("doctor.keySources"), ok: providers.length > 0 && keyedProviders === providers.length, detail: `${keyedProviders}/${providers.length || 0}` },
+      { label: t("doctor.routesAssigned"), ok: routes.length > 0 && routedProviders > 0, detail: `${routes.length} ${t(routes.length === 1 ? "doctor.route" : "doctor.routes")}` },
+      { label: t("doctor.runtimeProbes"), ok: Boolean(status?.running), detail: status?.running ? `PID ${status.pid ?? "-"}` : t("doctor.serverStopped") },
     ];
-  }, [providers, routes, status?.pid, status?.running]);
+  }, [providers, routes, status?.pid, status?.running, t]);
   const doctorReadyCount = doctorItems.filter((item) => item.ok).length;
   const dashboard = useMemo(() => {
     const requests = latestSample?.values.ferryllm_requests_total ?? 0;
@@ -1315,7 +2103,7 @@ function App() {
       const r = await persistRunnableConfig(hotReload);
       setValidation(r.validation);
       await refreshStatus();
-      addToast(r.reloaded ? "Saved & hot reloaded" : "Saved & validated", "success");
+      addToast(r.reloaded ? t("toast.savedHotReloaded") : t("toast.savedValidated"), "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1325,7 +2113,7 @@ function App() {
     try {
       const r = await invoke<CommandResult>("validate_config_document", { request: { executable, config } });
       setValidation(r);
-      addToast(r.ok ? "Config is valid" : commandResultMessage(r), r.ok ? "success" : "error");
+      addToast(r.ok ? t("toast.configValid") : commandResultMessage(r), r.ok ? "success" : "error");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1344,7 +2132,7 @@ function App() {
         request: { executable, config_path: saved.path, replace_existing: current.source === "external" },
       });
       setStatus(s);
-      addToast(s.source === "external" ? "Detected existing ferryllm gateway" : "ferryllm started", "success");
+      addToast(s.source === "external" ? t("toast.gatewayDetected") : t("toast.ferryStarted"), "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1354,7 +2142,7 @@ function App() {
     try {
       const s = await invoke<ProcessStatus>("stop_server");
       setStatus(s);
-      addToast(s.source === "external" ? "Gateway is running outside this window" : "ferryllm stopped", s.source === "external" ? "warning" : "success");
+      addToast(s.source === "external" ? t("toast.gatewayExternal") : t("toast.ferryStopped"), s.source === "external" ? "warning" : "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1370,7 +2158,7 @@ function App() {
       }
       const s = await invoke<ProcessStatus>("restart_server", { request: { executable, config_path: saved.path, replace_existing: true } });
       setStatus(s);
-      addToast(s.source === "external" ? "Detected existing ferryllm gateway" : "ferryllm restarted", "success");
+      addToast(s.source === "external" ? t("toast.gatewayDetected") : t("toast.ferryRestarted"), "success");
     } catch (e) { addToast(String(e), "error"); }
     finally { setBusy(false); }
   }
@@ -1398,10 +2186,10 @@ function App() {
     });
     setStatus(started);
     if (!started.running) {
-      addToast("Gateway failed to start", "error");
+      addToast(t("toast.gatewayStartFailed"), "error");
       return false;
     }
-    addToast(started.source === "external" ? "Detected existing ferryllm gateway" : "Gateway started", "success");
+    addToast(started.source === "external" ? t("toast.gatewayDetected") : t("toast.gatewayStarted"), "success");
     return true;
   }
 
@@ -1561,23 +2349,23 @@ function App() {
   }
 
   async function deleteWorkspaceDirectory(path: string) {
-    const ok = window.confirm(`Delete this workspace directory?\n\n${path}\n\nThis removes the folder from disk and cannot be undone.`);
+    const ok = window.confirm(tf("launcher.deleteWorkspaceConfirm", { path }));
     if (!ok) return;
     try {
       await invoke("delete_workspace", { request: { path } });
       deleteWorkspace(path);
-      addToast("Workspace directory deleted", "success");
+      addToast(t("toast.workspaceDeleted"), "success");
       void refreshAiSessions(false);
     } catch (e) { addToast(String(e), "error"); }
   }
 
   async function deleteNativeSession(session: AISession) {
-    const ok = window.confirm(`Delete this ${session.tool} session file?\n\n${session.path}`);
+    const ok = window.confirm(tf("launcher.deleteSessionConfirm", { tool: session.tool, path: session.path }));
     if (!ok) return;
     try {
       await invoke("delete_ai_session", { request: { path: session.path } });
       setAiSessions((prev) => prev.filter((item) => !(item.tool === session.tool && item.id === session.id && item.path === session.path)));
-      addToast("Session deleted", "success");
+      addToast(t("toast.sessionDeleted"), "success");
     } catch (e) { addToast(String(e), "error"); }
   }
 
@@ -1590,21 +2378,21 @@ function App() {
   }
 
   async function addWorkspaceOnly() {
-    const dir = await open({ directory: true, title: "Select workspace" });
+    const dir = await open({ directory: true, title: t("launcher.selectWorkspace") });
     if (!dir) return;
     recordLaunch(dir, launchTool, launcherTarget, selectedProviderConfig);
     void refreshAiSessions(false);
-    addToast("Workspace added", "success");
+    addToast(t("toast.workspaceAdded"), "success");
   }
 
   async function createWorkspace() {
-    const parent = await open({ directory: true, title: "Select parent folder" });
+    const parent = await open({ directory: true, title: t("launcher.selectParentFolder") });
     if (!parent) return;
-    const name = window.prompt("Project name");
+    const name = window.prompt(t("launcher.projectName"));
     const cleanName = name?.trim();
     if (!cleanName) return;
     if (/[<>:"/\\|?*]/.test(cleanName)) {
-      addToast("Project name contains invalid path characters", "error");
+      addToast(t("toast.invalidProjectName"), "error");
       return;
     }
     const separator = parent.includes("\\") ? "\\" : "/";
@@ -1613,7 +2401,7 @@ function App() {
       await invoke("create_workspace", { request: { path } });
       recordLaunch(path, launchTool, launcherTarget, selectedProviderConfig);
       void refreshAiSessions(false);
-      addToast("Project created", "success");
+      addToast(t("toast.projectCreated"), "success");
     } catch (e) { addToast(String(e), "error"); }
   }
 
@@ -1626,7 +2414,7 @@ function App() {
   async function launchWorkspace(workspace: WorkspaceEntry, target: LaunchTarget = launcherTarget, tool: AITool = launchTool) {
     const provider = resolveWorkspaceProvider(workspace);
     if (!provider) {
-      addToast("Add a provider before launching a workspace", "error");
+      addToast(t("toast.addProviderBeforeWorkspace"), "error");
       setActiveView("providers");
       return;
     }
@@ -1641,7 +2429,7 @@ function App() {
         await invoke("launch_cli", { request: { directory: workspace.path, listen, provider_name: provider.name, provider_type: provider.type, tool, client_model: clientModel, client_reasoning_effort: reasoningEffort } });
       }
       recordLaunch(workspace.path, tool, target, provider, reasoningEffort);
-      addToast(`${target === "vscode" ? "VS Code" : `${tool} CLI`} launched`, "success");
+      addToast(tf("toast.launched", { target: target === "vscode" ? "VS Code" : `${tool} CLI` }), "success");
     } catch (e) { addToast(String(e), "error"); }
   }
 
@@ -1649,7 +2437,7 @@ function App() {
     const workspace = workspaces.find((item) => item.path.toLowerCase() === session.cwd.toLowerCase());
     const provider = workspace ? resolveWorkspaceProvider(workspace) : selectedProviderConfig;
     if (!provider) {
-      addToast("Add a provider before resuming a session", "error");
+      addToast(t("toast.addProviderBeforeSession"), "error");
       setActiveView("providers");
       return;
     }
@@ -1662,7 +2450,7 @@ function App() {
         request: { id: session.id, cwd: session.cwd, listen, provider_name: provider.name, provider_type: provider.type, tool: session.tool, client_model: clientModel, client_reasoning_effort: reasoningEffort },
       });
       recordLaunch(session.cwd, session.tool, "cli", provider, reasoningEffort);
-      addToast(`${session.tool} session resumed`, "success");
+      addToast(tf("toast.sessionResumed", { tool: session.tool }), "success");
     } catch (e) { addToast(String(e), "error"); }
   }
 
@@ -1674,7 +2462,7 @@ function App() {
       ?? providers.find((candidate) => candidate.type === item.providerType && providers.filter((inner) => inner.type === item.providerType).length === 1)
       ?? selectedProviderConfig;
     if (!provider) {
-      addToast("Add a provider before launching a workspace", "error");
+      addToast(t("toast.addProviderBeforeWorkspace"), "error");
       setActiveView("providers");
       return;
     }
@@ -1693,7 +2481,7 @@ function App() {
         return next;
       });
       setSelectedWorkspacePath(item.directory);
-      addToast(`${item.launchType === "vscode" ? "VS Code" : item.tool + " CLI"} launched`, "success");
+      addToast(tf("toast.launched", { target: item.launchType === "vscode" ? "VS Code" : item.tool + " CLI" }), "success");
     } catch (e) { addToast(String(e), "error"); }
   }
 
@@ -1726,6 +2514,7 @@ function App() {
       next.providers = [...(next.providers ?? []), { name: `provider-${(next.providers ?? []).length + 1}`, type: "openai", base_url: "" }];
       setSelectedProvider(next.providers.length - 1);
       setDetailTab("settings");
+      setAddingProvider(false);
       setActiveView("provider-detail");
       return next;
     });
@@ -1735,7 +2524,8 @@ function App() {
     const existingIndex = providers.findIndex((p) => p.name === preset.name);
     if (existingIndex >= 0) {
       setSelectedProvider(existingIndex);
-      addToast(`${providerDisplayName(preset)} already exists`, "info");
+      setAddingProvider(false);
+      addToast(tf("toast.providerExists", { provider: providerDisplayName(preset) }), "info");
       return;
     }
     setConfig((cur) => {
@@ -1748,6 +2538,7 @@ function App() {
       next.routes = [...(next.routes ?? []), ...addedRoutes];
       setSelectedProvider(next.providers.length - 1);
       setDetailTab("settings");
+      setAddingProvider(false);
       setActiveView("provider-detail");
       return next;
     });
@@ -1789,7 +2580,7 @@ function App() {
   async function testProvider(provider: ProviderConfig) {
     try {
       const result = await invoke<ProbeResult>("probe_provider", { request: { ...provider, mode: "test" } });
-      addToast(result.ok ? `${provider.name} connection ok` : result.error ?? `${provider.name} test failed`, result.ok ? "success" : "error");
+      addToast(result.ok ? tf("toast.providerConnectionOk", { provider: provider.name }) : result.error ?? tf("toast.providerTestFailed", { provider: provider.name }), result.ok ? "success" : "error");
     } catch (e) {
       addToast(String(e), "error");
     }
@@ -1799,10 +2590,10 @@ function App() {
     try {
       const result = await invoke<ProbeResult>("probe_provider", { request: { ...provider, mode: "usage" } });
       if (result.ok) {
-        addToast(`${provider.name} usage endpoint responded`, "success");
+        addToast(tf("toast.providerUsageOk", { provider: provider.name }), "success");
         setValidation({ ok: true, code: result.status, stdout: result.body || "usage endpoint ok", stderr: "" });
       } else {
-        addToast(result.error ?? `${provider.name} usage endpoint not found`, "error");
+        addToast(result.error ?? tf("toast.providerUsageMissing", { provider: provider.name }), "error");
       }
     } catch (e) {
       addToast(String(e), "error");
@@ -1814,13 +2605,13 @@ function App() {
     try {
       const result = await invoke<ProbeResult>("probe_provider", { request: { ...provider, mode: "models" } });
       if (!result.ok) {
-        addToast(result.error ?? `${provider.name} model endpoint not found`, "error");
+        addToast(result.error ?? tf("toast.providerModelsMissing", { provider: provider.name }), "error");
         return;
       }
       const models = parseProviderModels(result.body);
       setProviderModelCatalog((prev) => ({ ...prev, [provider.name]: models }));
       setValidation({ ok: true, code: result.status, stdout: models.length ? models.join("\n") : result.body || "model endpoint ok", stderr: "" });
-      addToast(models.length ? `${models.length} models loaded` : `${provider.name} model endpoint responded`, "success");
+      addToast(models.length ? tf("toast.modelsLoaded", { count: models.length }) : tf("toast.providerModelsOk", { provider: provider.name }), "success");
     } catch (e) {
       addToast(String(e), "error");
     } finally {
@@ -1925,6 +2716,7 @@ function App() {
   /* ── Render ───────────────────────────────────────────── */
 
   return (
+    <I18nContext.Provider value={i18nValue}>
     <div className="app-shell min-h-screen bg-bg text-fg">
       <AppSidebar
         activeView={activeView}
@@ -1938,26 +2730,18 @@ function App() {
       />
 
       {/* ── Main ───────────────────────────────── */}
-      <main className={cn("h-screen min-w-0 flex-1 overflow-y-auto px-4", activeView === "providers" ? "py-3" : "py-4")}>
+      <main className={cn("h-screen min-w-0 flex-1 overflow-y-auto px-5", activeView === "providers" ? "py-4" : "py-5")}>
         <AnimatePresence mode="wait">
           {/* ── Dashboard ── */}
           {activeView === "dashboard" && (
             <DashboardView
               snapshot={snapshot}
               status={status}
-              providerCount={providers.length}
-              routeCount={routes.length}
-              activeProviderName={selectedProviderConfig?.name}
-              listenAddress={valueAsString(config.server?.listen) || "127.0.0.1:3000"}
               latestSample={latestSample}
               dashboard={dashboard}
               logs={status?.logs ?? []}
               onRefresh={() => void refreshDashboard()}
-              onOpenProviders={() => setActiveView("providers")}
-              onOpenLauncher={() => setActiveView("launcher")}
-              onStartGateway={() => void startServer()}
               refreshing={dashboardBusy}
-              actionBusy={busy}
             />
           )}
 
@@ -1975,100 +2759,115 @@ function App() {
               transition={{ duration: 0.2 }}
               className="grid w-full gap-2"
             >
-              <div className="grid gap-2">
-                <section className="rounded-lg border border-border bg-surface">
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-3">
-                    <div className="min-w-[220px]">
-                      <p className="text-xs font-bold uppercase text-primary">Provider routing matrix</p>
-                      <h1 className="mt-1 text-lg font-bold text-heading">Connect upstream providers to local model aliases.</h1>
-                      <p className="mt-1 text-sm text-muted">Presets create providers and routes that ferryllm exposes to Codex, Claude Code, OpenCode, and OpenAI-compatible clients.</p>
+              <div className="grid gap-3">
+                <section className="control-card overflow-hidden">
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold uppercase text-muted">{t("providers.registry")}</p>
+                      <h1 className="mt-1 text-lg font-bold text-heading">{t("providers.configured")}</h1>
                     </div>
-                    <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-1.5">
-                      <div className="flex flex-wrap items-center gap-2">
-                        {([
-                          { value: "all" as PresetCategoryFilter, label: "All" },
-                          { value: "official" as PresetCategoryFilter, label: "Official" },
-                          { value: "aggregator" as PresetCategoryFilter, label: "Aggregator" },
-                          { value: "china" as PresetCategoryFilter, label: "CN" },
-                          { value: "local" as PresetCategoryFilter, label: "Local" },
-                        ]).map((item) => (
-                          <button
-                            key={item.value}
-                            type="button"
-                            onClick={() => setPresetFilter(item.value)}
-                            className={cn(
-                              "inline-flex h-8 items-center rounded-lg px-3 text-xs font-bold transition-colors",
-                              presetFilter === item.value
-                                ? "bg-primary text-white"
-                                : "bg-muted-soft text-muted hover:bg-border hover:text-heading"
-                            )}
-                          >
-                            {item.label}
-                          </button>
-                        ))}
-                      </div>
+                    <div className="flex min-w-0 flex-1 flex-wrap items-center justify-end gap-2">
                       <div className="relative w-[220px] max-w-full">
                         <Search size={14} className="provider-search-icon pointer-events-none absolute top-1/2 -translate-y-1/2 text-icon" />
                         <input
                           value={providerSearch}
                           onChange={(event) => setProviderSearch(event.currentTarget.value)}
-                          placeholder="Search providers"
+                          placeholder={t("common.searchProviders")}
                           className="provider-search-input h-9"
                         />
                       </div>
                       <IconAction
-                        title={`Doctor ${doctorReadyCount}/${doctorItems.length}: ${doctorItems.map((item) => `${item.label} ${item.ok ? "ok" : item.detail}`).join("; ")}`}
+                        title={`${t("doctor.title")} ${doctorReadyCount}/${doctorItems.length}: ${doctorItems.map((item) => `${item.label} ${item.ok ? t("doctor.ok") : item.detail}`).join("; ")}`}
                         icon={doctorReadyCount === doctorItems.length ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}
                         onClick={() => addToast(
                           doctorReadyCount === doctorItems.length
-                            ? "Doctor passed"
+                            ? t("doctor.passed")
                             : doctorItems.filter((item) => !item.ok).map((item) => `${item.label}: ${item.detail}`).join("; "),
                           doctorReadyCount === doctorItems.length ? "success" : "info"
                         )}
                       />
-                      <IconAction title="Settings" icon={<Settings size={14} />} onClick={() => setActiveView("settings")} />
-                      <IconAction title="Save config" icon={<Save size={14} />} onClick={() => void saveConfig()} />
-                      <Button icon={<Plus size={14} />} onClick={addProvider}>Custom</Button>
+                      <IconAction title={t("common.settings")} icon={<Settings size={14} />} onClick={() => setActiveView("settings")} />
+                      <IconAction title={t("common.save")} icon={<Save size={14} />} onClick={() => void saveConfig()} />
+                      <Button
+                        variant={addingProvider ? undefined : "primary"}
+                        icon={addingProvider ? <ChevronUp size={14} /> : <Plus size={14} />}
+                        onClick={() => {
+                          setAddingProvider((value) => !value);
+                          setPresetsExpanded(false);
+                        }}
+                      >
+                        {addingProvider ? t("common.closeAdd") : t("common.addProvider")}
+                      </Button>
                     </div>
                   </div>
-                  <div className={cn("provider-preset-grid", shouldCollapsePresets && "is-collapsed", presetsExpanded && shouldOfferPresetExpand && "is-expanded")}>
-                    {displayedProviderPresets.map((preset) => (
-                      <button
-                        key={preset.name}
-                        type="button"
-                        onClick={() => addProviderFromPreset(preset)}
-                        className="provider-preset-card group/preset"
-                        title={`${providerDisplayName(preset)} - ${preset.description}\n${preset.base_url}`}
-                      >
-                        <ProviderLogo provider={preset} className="preset-provider-logo text-xs" />
-                        <span className="min-w-0 truncate text-sm font-bold text-heading">{providerDisplayName(preset)}</span>
-                        {preset.featured ? (
-                          <span className="preset-featured" title="Recommended preset">
-                            <Star size={11} fill="currentColor" />
-                          </span>
-                        ) : null}
-                      </button>
-                    ))}
-                    {shouldOfferPresetExpand && !providerQuery ? (
-                      <button
-                        type="button"
-                        onClick={() => setPresetsExpanded((value) => !value)}
-                        className="provider-preset-more"
-                        title={presetsExpanded ? "Collapse presets" : "Show more presets"}
-                      >
-                        {presetsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                        {presetsExpanded ? "Collapse" : "More"}
-                      </button>
-                    ) : null}
-                    {!visibleProviderPresets.length && (
-                      <div className="w-full rounded-lg border border-border bg-bg px-4 py-4 text-center text-sm text-muted">
-                        No presets match "{providerSearch}".
+                  {addingProvider ? (
+                    <div className="provider-add-panel">
+                      <div className="flex flex-wrap items-center justify-between gap-3 px-5 pt-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          {([
+                            { value: "all" as PresetCategoryFilter, label: "All" },
+                            { value: "official" as PresetCategoryFilter, label: "Official" },
+                            { value: "aggregator" as PresetCategoryFilter, label: "Aggregator" },
+                            { value: "china" as PresetCategoryFilter, label: "CN" },
+                            { value: "local" as PresetCategoryFilter, label: "Local" },
+                          ]).map((item) => (
+                            <button
+                              key={item.value}
+                              type="button"
+                              onClick={() => setPresetFilter(item.value)}
+                              className={cn(
+                                "inline-flex h-8 items-center rounded-lg px-3 text-xs font-bold transition-colors",
+                                presetFilter === item.value
+                                  ? "bg-primary text-white"
+                                  : "bg-muted-soft text-muted hover:bg-border hover:text-heading"
+                              )}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                        <Button icon={<CirclePlus size={14} />} onClick={addProvider}>{t("providers.blankCustom")}</Button>
                       </div>
-                    )}
-                  </div>
+                      <div className={cn("provider-preset-grid", shouldCollapsePresets && "is-collapsed", presetsExpanded && shouldOfferPresetExpand && "is-expanded")}>
+                        {displayedProviderPresets.map((preset) => (
+                          <button
+                            key={preset.name}
+                            type="button"
+                            onClick={() => addProviderFromPreset(preset)}
+                            className="provider-preset-card group/preset"
+                            title={`${providerDisplayName(preset)} - ${preset.description}\n${preset.base_url}`}
+                          >
+                            <ProviderLogo provider={preset} className="preset-provider-logo text-xs" />
+                            <span className="min-w-0 truncate text-sm font-bold text-heading">{providerDisplayName(preset)}</span>
+                            {preset.featured ? (
+                          <span className="preset-featured" title={t("providers.recommendedPreset")}>
+                                <Star size={11} fill="currentColor" />
+                              </span>
+                            ) : null}
+                          </button>
+                        ))}
+                        {shouldOfferPresetExpand && !providerQuery ? (
+                          <button
+                            type="button"
+                            onClick={() => setPresetsExpanded((value) => !value)}
+                            className="provider-preset-more"
+                            title={presetsExpanded ? t("providers.collapsePresets") : t("providers.showMorePresets")}
+                          >
+                            {presetsExpanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+                            {presetsExpanded ? t("common.collapse") : t("providers.more")}
+                          </button>
+                        ) : null}
+                        {!visibleProviderPresets.length && (
+                          <div className="w-full rounded-lg border border-border bg-bg px-4 py-4 text-center text-sm text-muted">
+                            {tf("providers.noPresetMatch", { query: providerSearch })}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
                 </section>
 
-                <section className="grid gap-3" aria-label="Providers">
+                <section className="grid gap-3" aria-label={t("nav.providers")}>
                   {providers.length && visibleProviders.length ? visibleProviders.map(({ provider: p, index: i }) => {
                     const summary = providerSummaries[i];
                     return (
@@ -2093,31 +2892,31 @@ function App() {
                                   summary.status === "attention" && "bg-danger-soft text-danger"
                                 )}>
                                   <span className="h-1.5 w-1.5 rounded-full bg-current" />
-                                  {summary.statusLabel}
+                                  {summary.statusLabelCount ? tf(summary.statusLabelKey, { count: fmtInt(summary.statusLabelCount) }) : t(summary.statusLabelKey)}
                                 </span>
                               </div>
-                              <p className="mt-1 truncate font-mono text-xs text-muted">{p.base_url || "No base URL configured"}</p>
+                              <p className="mt-1 truncate font-mono text-xs text-muted">{p.base_url || t("providers.noBaseUrl")}</p>
                             </div>
                             <div className="provider-action-strip flex shrink-0 items-center gap-1">
-                              <IconAction title="Test provider" icon={<Activity size={14} />} onClick={(event) => { event.stopPropagation(); void testProvider(p); }} />
-                              <IconAction title="Query usage" icon={<DollarSign size={14} />} onClick={(event) => { event.stopPropagation(); void queryProviderUsage(p); }} />
-                              <IconAction title="Copy provider" icon={<Copy size={14} />} onClick={(event) => { event.stopPropagation(); duplicateProvider(i); }} />
-                              <IconAction title="Delete provider" danger icon={<Trash2 size={14} />} onClick={(event) => { event.stopPropagation(); removeProvider(i); }} />
+                              <IconAction title={t("providers.testProvider")} icon={<Activity size={14} />} onClick={(event) => { event.stopPropagation(); void testProvider(p); }} />
+                              <IconAction title={t("providers.queryUsage")} icon={<DollarSign size={14} />} onClick={(event) => { event.stopPropagation(); void queryProviderUsage(p); }} />
+                              <IconAction title={t("providers.copyProvider")} icon={<Copy size={14} />} onClick={(event) => { event.stopPropagation(); duplicateProvider(i); }} />
+                              <IconAction title={t("providers.deleteProvider")} danger icon={<Trash2 size={14} />} onClick={(event) => { event.stopPropagation(); removeProvider(i); }} />
                             </div>
                           </div>
                           <div className="grid gap-2 sm:grid-cols-4">
-                            <ProviderMiniStat icon={<Database size={13} />} label="Key source" value={summary.key.label} detail={summary.key.detail} ok={summary.key.ok} />
-                            <ProviderMiniStat icon={<Route size={13} />} label="Routes" value={fmtInt(summary.routeCount)} detail="primary matches" />
-                            <ProviderMiniStat icon={<Network size={13} />} label="Fallbacks" value={fmtInt(summary.fallbackCount)} detail="referencing this" />
-                            <ProviderMiniStat icon={<Gauge size={13} />} label="Traffic" value={fmtInt(summary.requests)} detail={summary.errors ? `${fmtInt(summary.errors)} errors` : "requests"} ok={!summary.errors} />
+                            <ProviderMiniStat icon={<Database size={13} />} label={t("providers.keySource")} value={providerKeyLabel(summary.key, t)} detail={providerKeyDetail(summary.key, t, tf)} ok={summary.key.ok} />
+                            <ProviderMiniStat icon={<Route size={13} />} label={t("providers.routes")} value={fmtInt(summary.routeCount)} detail={t("providers.primaryMatches")} />
+                            <ProviderMiniStat icon={<Network size={13} />} label={t("providers.fallbacks")} value={fmtInt(summary.fallbackCount)} detail={t("providers.referencingThis")} />
+                            <ProviderMiniStat icon={<Gauge size={13} />} label={t("providers.traffic")} value={fmtInt(summary.requests)} detail={summary.errors ? `${fmtInt(summary.errors)} ${t("dashboard.errors")}` : t("providers.requests")} ok={!summary.errors} />
                           </div>
                         </div>
                       </Card>
                     );
                   }) : providers.length ? (
-                    <EmptyState compact title="No matching providers" action="Clear search" onAction={() => setProviderSearch("")} />
+                    <EmptyState compact title={t("providers.noMatching")} action={t("providers.clearSearch")} onAction={() => setProviderSearch("")} />
                   ) : (
-                    <EmptyState compact title="No providers connected" action="Add provider" onAction={addProvider} />
+                    <EmptyState compact title={t("providers.noProviders")} action={t("common.addProvider")} onAction={addProvider} />
                   )}
                 </section>
               </div>
@@ -2136,12 +2935,12 @@ function App() {
             >
               {/* Provider name header */}
               <div className="flex items-center gap-3">
-                <Button icon={<ChevronDown size={14} className="rotate-90" />} onClick={() => setActiveView("providers")}>Back</Button>
+                <Button icon={<ChevronDown size={14} className="rotate-90" />} onClick={() => setActiveView("providers")}>{t("common.back")}</Button>
                 <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-border bg-bg text-lg font-bold text-primary">
                   {selectedProviderConfig.name?.slice(0, 1).toUpperCase() || "P"}
                 </div>
                 <div>
-                  <h2 className="text-lg font-bold text-heading">{selectedProviderConfig.name || "Unnamed Provider"}</h2>
+                  <h2 className="text-lg font-bold text-heading">{selectedProviderConfig.name || t("providers.unnamed")}</h2>
                   <span className="text-xs text-muted">{selectedProviderConfig.type}</span>
                 </div>
               </div>
@@ -2156,17 +2955,17 @@ function App() {
                       : "bg-muted-soft text-muted"
                   )}>
                     <Terminal size={14} />
-                    <span>{gatewayStatusLabel(status)}</span>
+                    <span>{t(gatewayStatusLabelKey(status))}</span>
                     {status?.pid && <strong className="font-bold">PID {status.pid}</strong>}
                   </div>
-                  <Button variant="success" icon={<Play size={14} />} onClick={startServer} disabled={busy || status?.running}>Start</Button>
-                  <Button variant="danger" icon={<Square size={14} />} onClick={stopServer} disabled={busy || !status?.managed}>Stop</Button>
-                  <Button icon={<RotateCw size={14} />} onClick={restartServer} disabled={busy}>Restart</Button>
-                  <Button variant="primary" icon={<Save size={14} />} onClick={saveConfig} disabled={busy}>Save</Button>
-                  <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>Validate</Button>
+                  <Button variant="success" icon={<Play size={14} />} onClick={startServer} disabled={busy || status?.running}>{t("providers.start")}</Button>
+                  <Button variant="danger" icon={<Square size={14} />} onClick={stopServer} disabled={busy || !status?.managed}>{t("providers.stop")}</Button>
+                  <Button icon={<RotateCw size={14} />} onClick={restartServer} disabled={busy}>{t("providers.restart")}</Button>
+                  <Button variant="primary" icon={<Save size={14} />} onClick={saveConfig} disabled={busy}>{t("common.save")}</Button>
+                  <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>{t("common.validate")}</Button>
                   <div className="ml-auto flex items-center gap-3 border-l border-border pl-4">
-                    <span className="text-xs font-semibold text-muted">Workspace launches live in Launcher.</span>
-                    <Button icon={<FolderOpen size={14} />} onClick={() => setActiveView("launcher")}>Open Launcher</Button>
+                    <span className="text-xs font-semibold text-muted">{t("providers.launcherHint")}</span>
+                    <Button icon={<FolderOpen size={14} />} onClick={() => setActiveView("launcher")}>{t("providers.openLauncher")}</Button>
                   </div>
                 </div>
               </div>
@@ -2174,10 +2973,10 @@ function App() {
               {/* Sub-tabs: Settings | Routes | Runtime */}
               <nav className="flex items-center gap-1 rounded-xl bg-muted-soft p-1">
                 {([
-                  { tab: "settings" as DetailTab, icon: <Settings size={14} />, label: "Settings" },
-                  { tab: "models" as DetailTab, icon: <Database size={14} />, label: "Models" },
-                  { tab: "routes" as DetailTab, icon: <Route size={14} />, label: "Routes" },
-                  { tab: "runtime" as DetailTab, icon: <Gauge size={14} />, label: "Runtime" },
+                  { tab: "settings" as DetailTab, icon: <Settings size={14} />, label: t("providers.settings") },
+                  { tab: "models" as DetailTab, icon: <Database size={14} />, label: t("providers.models") },
+                  { tab: "routes" as DetailTab, icon: <Route size={14} />, label: t("providers.routes") },
+                  { tab: "runtime" as DetailTab, icon: <Gauge size={14} />, label: t("providers.runtime") },
                 ]).map(({ tab, icon, label }) => (
                   <button
                     key={tab}
@@ -2205,28 +3004,28 @@ function App() {
                 {detailTab === "settings" && (
                   <motion.div key="dt-settings" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
                     <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
-                      <PanelHeader title="Provider Settings" subtitle="Use env, URL, file, or watched config paths for API keys." />
+                      <PanelHeader title={t("providers.providerSettings")} subtitle={t("providers.providerSettingsSubtitle")} />
                       <div className="grid gap-5 p-6">
                         <div className="grid grid-cols-2 gap-4">
-                          <TextField label="Provider Name" value={selectedProviderConfig.name} onChange={(v) => updateProvider(selectedProvider, { name: v })} />
-                          <SelectField label="Type" value={selectedProviderConfig.type} options={["openai", "openai_responses", "anthropic", "gemini"]} onChange={(v) => updateProvider(selectedProvider, { type: v })} />
+                          <TextField label={t("providers.providerName")} value={selectedProviderConfig.name} onChange={(v) => updateProvider(selectedProvider, { name: v })} />
+                          <SelectField label={t("providers.type")} value={selectedProviderConfig.type} options={["openai", "openai_responses", "anthropic", "gemini"]} onChange={(v) => updateProvider(selectedProvider, { type: v })} />
                         </div>
-                        <TextField label="Base URL" value={selectedProviderConfig.base_url} onChange={(v) => updateProvider(selectedProvider, { base_url: v })} />
-                        <TextField secret label="API Key (direct)" value={selectedProviderConfig.api_key ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key: v || undefined, api_key_env: undefined, api_key_url: undefined, api_key_file: undefined, key_watch: undefined })} />
+                        <TextField label={t("providers.baseUrl")} value={selectedProviderConfig.base_url} onChange={(v) => updateProvider(selectedProvider, { base_url: v })} />
+                        <TextField secret label={t("providers.apiKeyDirect")} value={selectedProviderConfig.api_key ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key: v || undefined, api_key_env: undefined, api_key_url: undefined, api_key_file: undefined, key_watch: undefined })} />
                         <div className="grid grid-cols-2 gap-4">
-                          <TextField label="API key env" value={selectedProviderConfig.api_key_env ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key_env: v || undefined, api_key: undefined, api_key_url: undefined, api_key_file: undefined, key_watch: undefined })} />
-                          <TextField label="API key URL" value={selectedProviderConfig.api_key_url ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key_url: v || undefined, api_key: undefined, api_key_env: undefined, api_key_file: undefined, key_watch: undefined })} />
+                          <TextField label={t("providers.apiKeyEnv")} value={selectedProviderConfig.api_key_env ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key_env: v || undefined, api_key: undefined, api_key_url: undefined, api_key_file: undefined, key_watch: undefined })} />
+                          <TextField label={t("providers.apiKeyUrl")} value={selectedProviderConfig.api_key_url ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key_url: v || undefined, api_key: undefined, api_key_env: undefined, api_key_file: undefined, key_watch: undefined })} />
                         </div>
-                        <TextField label="API key file" value={selectedProviderConfig.api_key_file ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key_file: v || undefined, api_key: undefined, api_key_env: undefined, api_key_url: undefined, key_watch: undefined })} />
+                        <TextField label={t("providers.apiKeyFile")} value={selectedProviderConfig.api_key_file ?? ""} onChange={(v) => updateProvider(selectedProvider, { api_key_file: v || undefined, api_key: undefined, api_key_env: undefined, api_key_url: undefined, key_watch: undefined })} />
                         <div className="flex justify-end gap-2">
-                          <Button icon={<Activity size={14} />} onClick={() => addKeyWatch(selectedProvider)}>Add key watch</Button>
-                          <Button variant="danger" icon={<Trash2 size={14} />} onClick={() => { removeProvider(selectedProvider); setActiveView("providers"); }}>Remove provider</Button>
+                          <Button icon={<Activity size={14} />} onClick={() => addKeyWatch(selectedProvider)}>{t("providers.addKeyWatch")}</Button>
+                          <Button variant="danger" icon={<Trash2 size={14} />} onClick={() => { removeProvider(selectedProvider); setActiveView("providers"); }}>{t("providers.removeProvider")}</Button>
                         </div>
                         {(selectedProviderConfig.key_watch ?? []).map((w, wi) => (
                           <div key={wi} className="grid gap-3 rounded-xl border border-border bg-muted-soft p-4">
-                            <TextField label="Watch file" value={w.file} onChange={(v) => updateKeyWatch(selectedProvider, wi, { file: v })} />
-                            <TextField label="Key path" value={w.path} onChange={(v) => updateKeyWatch(selectedProvider, wi, { path: v })} />
-                            <TextField label="URL path" value={w.url_path ?? ""} onChange={(v) => updateKeyWatch(selectedProvider, wi, { url_path: v || undefined })} />
+                            <TextField label={t("providers.watchFile")} value={w.file} onChange={(v) => updateKeyWatch(selectedProvider, wi, { file: v })} />
+                            <TextField label={t("providers.keyPath")} value={w.path} onChange={(v) => updateKeyWatch(selectedProvider, wi, { path: v })} />
+                            <TextField label={t("providers.urlPath")} value={w.url_path ?? ""} onChange={(v) => updateKeyWatch(selectedProvider, wi, { url_path: v || undefined })} />
                           </div>
                         ))}
                       </div>
@@ -2237,20 +3036,20 @@ function App() {
                 {detailTab === "models" && (
                   <motion.div key="dt-models" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5">
                     <section className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
-                      <PanelHeader title="Model Mappings" subtitle="Client-visible model names are exact routes; upstream models are sent to this provider." />
+                      <PanelHeader title={t("providers.modelMappings")} subtitle={t("providers.modelMappingsSubtitle")} />
                       <div className="grid gap-4 p-5">
                         {providerMappingRows(selectedProviderConfig, routes).map((row) => (
                           <div key={row.kind} className="grid gap-3 rounded-xl border border-border bg-bg p-4">
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <h3 className="text-sm font-bold text-heading">{row.label}</h3>
-                                <p className="mt-1 text-xs text-muted">{row.routeIndex >= 0 ? "Custom exact route" : "Generated fallback route"}</p>
+                                <p className="mt-1 text-xs text-muted">{row.routeIndex >= 0 ? t("providers.customExactRoute") : t("providers.generatedFallbackRoute")}</p>
                               </div>
                               <span className="rounded-full bg-info-soft px-2.5 py-1 text-[11px] font-bold text-primary">{row.kind}</span>
                             </div>
                             <div className="grid grid-cols-2 gap-3">
-                              <TextField label="Client model name" value={row.clientModel} onChange={(v) => updateProviderModelMapping(selectedProviderConfig, row.kind, { clientModel: v })} />
-                              <TextField label="Upstream model" value={row.upstreamModel} onChange={(v) => updateProviderModelMapping(selectedProviderConfig, row.kind, { upstreamModel: v })} />
+                              <TextField label={t("providers.clientModelName")} value={row.clientModel} onChange={(v) => updateProviderModelMapping(selectedProviderConfig, row.kind, { clientModel: v })} />
+                              <TextField label={t("providers.upstreamModel")} value={row.upstreamModel} onChange={(v) => updateProviderModelMapping(selectedProviderConfig, row.kind, { upstreamModel: v })} />
                             </div>
                           </div>
                         ))}
@@ -2260,11 +3059,11 @@ function App() {
                     <section className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
                         <div>
-                          <h2 className="text-sm font-bold text-heading">Available Models</h2>
-                          <p className="mt-1 text-xs text-muted">Fetched from the provider model endpoint when available.</p>
+                          <h2 className="text-sm font-bold text-heading">{t("providers.availableModels")}</h2>
+                          <p className="mt-1 text-xs text-muted">{t("providers.availableModelsSubtitle")}</p>
                         </div>
                         <Button icon={<RefreshCw size={14} />} onClick={() => void fetchProviderModels(selectedProviderConfig)} disabled={modelProbeBusy}>
-                          {modelProbeBusy ? "Loading" : "Fetch models"}
+                          {modelProbeBusy ? t("providers.loading") : t("providers.fetchModels")}
                         </Button>
                       </div>
                       <div className="max-h-80 overflow-auto p-4">
@@ -2274,15 +3073,15 @@ function App() {
                               <div key={model} className="flex items-center justify-between gap-3 rounded-lg border border-border bg-bg px-3 py-2">
                                 <span className="min-w-0 truncate font-mono text-xs text-fg">{model}</span>
                                 <div className="flex shrink-0 gap-2">
-                                  <Button icon={<Route size={13} />} onClick={() => updateProviderModelMapping(selectedProviderConfig, "claude", { upstreamModel: model })}>Use for Claude</Button>
-                                  <Button icon={<Route size={13} />} onClick={() => updateProviderModelMapping(selectedProviderConfig, "openai", { upstreamModel: model })}>Use for Codex</Button>
-                                  <Button icon={<Plus size={13} />} onClick={() => addProviderModelMapping(selectedProviderConfig, model)}>Add alias</Button>
+                                  <Button icon={<Route size={13} />} onClick={() => updateProviderModelMapping(selectedProviderConfig, "claude", { upstreamModel: model })}>{t("providers.useForClaude")}</Button>
+                                  <Button icon={<Route size={13} />} onClick={() => updateProviderModelMapping(selectedProviderConfig, "openai", { upstreamModel: model })}>{t("providers.useForCodex")}</Button>
+                                  <Button icon={<Plus size={13} />} onClick={() => addProviderModelMapping(selectedProviderConfig, model)}>{t("providers.addAlias")}</Button>
                                 </div>
                               </div>
                             ))}
                           </div>
                         ) : (
-                          <EmptyState compact title="No models loaded" action="Fetch models" onAction={() => void fetchProviderModels(selectedProviderConfig)} />
+                          <EmptyState compact title={t("providers.noModelsLoaded")} action={t("providers.fetchModels")} onAction={() => void fetchProviderModels(selectedProviderConfig)} />
                         )}
                       </div>
                     </section>
@@ -2292,10 +3091,10 @@ function App() {
                 {detailTab === "routes" && (
                   <motion.div key="dt-routes" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid grid-cols-[minmax(300px,1fr)_minmax(280px,0.6fr)] gap-5 items-start">
                     {/* Routes list */}
-                    <section className="flex flex-col gap-3" aria-label="Routes">
+                    <section className="flex flex-col gap-3" aria-label={t("providers.routes")}>
                       <div className="flex items-center justify-between">
-                        <h3 className="text-sm font-bold text-heading">Routes</h3>
-                        <Button icon={<Plus size={14} />} onClick={addRoute}>Add route</Button>
+                        <h3 className="text-sm font-bold text-heading">{t("providers.routes")}</h3>
+                        <Button icon={<Plus size={14} />} onClick={addRoute}>{t("providers.addRoute")}</Button>
                       </div>
                       {routes.length ? routes.map((r, i) => (
                         <Card key={`${r.match}-${i}`} active={selectedRoute === i} onClick={() => setSelectedRoute(i)}>
@@ -2304,43 +3103,43 @@ function App() {
                           </div>
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-2">
-                              <strong className="truncate text-sm font-bold text-heading">{r.match || "Empty"}</strong>
+                              <strong className="truncate text-sm font-bold text-heading">{r.match || t("providers.empty")}</strong>
                               <span className="rounded-full bg-info-soft px-2 py-0.5 text-[11px] font-semibold text-primary">{r.match_type ?? "prefix"}</span>
                             </div>
                             <p className="mt-0.5 truncate text-xs text-muted">
-                              {r.provider || "No provider"}{r.rewrite_model ? ` → ${r.rewrite_model}` : ""}
+                              {r.provider || t("providers.noProvider")}{r.rewrite_model ? ` -> ${r.rewrite_model}` : ""}
                             </p>
                           </div>
                           {r.fallback_providers?.length ? (
-                            <span className="rounded-full bg-success-soft px-2.5 py-0.5 text-[11px] font-bold text-success">fallback</span>
+                            <span className="rounded-full bg-success-soft px-2.5 py-0.5 text-[11px] font-bold text-success">{t("providers.fallback")}</span>
                           ) : null}
                         </Card>
                       )) : (
-                        <EmptyState title="No routes" action="Add route" onAction={addRoute} />
+                        <EmptyState title={t("providers.noRoutes")} action={t("providers.addRoute")} onAction={addRoute} />
                       )}
                     </section>
                     {/* Route detail */}
                     <section className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
                       {selectedRouteConfig ? (
                         <>
-                          <PanelHeader title="Route Details" subtitle="Match model names, choose a provider, optionally rewrite." />
+                          <PanelHeader title={t("providers.routeDetails")} subtitle={t("providers.routeDetailsSubtitle")} />
                           <div className="grid gap-4 p-5">
                             <div className="grid grid-cols-2 gap-3">
-                              <TextField label="Match" value={selectedRouteConfig.match} onChange={(v) => updateRoute(selectedRoute, { match: v })} />
-                              <SelectField label="Match type" value={selectedRouteConfig.match_type ?? "prefix"} options={["prefix", "exact"]} onChange={(v) => updateRoute(selectedRoute, { match_type: v as "prefix" | "exact" })} />
+                              <TextField label={t("providers.match")} value={selectedRouteConfig.match} onChange={(v) => updateRoute(selectedRoute, { match: v })} />
+                              <SelectField label={t("providers.matchType")} value={selectedRouteConfig.match_type ?? "prefix"} options={["prefix", "exact"]} onChange={(v) => updateRoute(selectedRoute, { match_type: v as "prefix" | "exact" })} />
                             </div>
                             <div className="grid grid-cols-2 gap-3">
-                              <SelectField label="Provider" value={selectedRouteConfig.provider} options={providerNames} onChange={(v) => updateRoute(selectedRoute, { provider: v })} />
-                              <TextField label="Rewrite model" value={selectedRouteConfig.rewrite_model ?? ""} onChange={(v) => updateRoute(selectedRoute, { rewrite_model: v || undefined })} />
+                              <SelectField label={t("common.provider")} value={selectedRouteConfig.provider} options={providerNames} onChange={(v) => updateRoute(selectedRoute, { provider: v })} />
+                              <TextField label={t("providers.rewriteModel")} value={selectedRouteConfig.rewrite_model ?? ""} onChange={(v) => updateRoute(selectedRoute, { rewrite_model: v || undefined })} />
                             </div>
-                            <SelectField label="Client kind" value={selectedRouteConfig.client_kind ?? ""} options={["", "claude", "openai"]} onChange={(v) => updateRoute(selectedRoute, { client_kind: (v || undefined) as "claude" | "openai" | undefined })} />
-                            <TextField label="Fallback providers CSV" value={(selectedRouteConfig.fallback_providers ?? []).join(", ")} onChange={(v) => updateRoute(selectedRoute, { fallback_providers: splitCsv(v) })} />
+                            <SelectField label={t("providers.clientKind")} value={selectedRouteConfig.client_kind ?? ""} options={["", "claude", "openai"]} onChange={(v) => updateRoute(selectedRoute, { client_kind: (v || undefined) as "claude" | "openai" | undefined })} />
+                            <TextField label={t("providers.fallbackProvidersCsv")} value={(selectedRouteConfig.fallback_providers ?? []).join(", ")} onChange={(v) => updateRoute(selectedRoute, { fallback_providers: splitCsv(v) })} />
                             <div className="flex justify-end">
-                              <Button variant="danger" icon={<Trash2 size={14} />} onClick={() => removeRoute(selectedRoute)}>Remove</Button>
+                              <Button variant="danger" icon={<Trash2 size={14} />} onClick={() => removeRoute(selectedRoute)}>{t("providers.remove")}</Button>
                             </div>
                           </div>
                         </>
-                      ) : <EmptyState title="No route selected" action="Add route" onAction={addRoute} />}
+                      ) : <EmptyState title={t("providers.noRouteSelected")} action={t("providers.addRoute")} onAction={addRoute} />}
                     </section>
                   </motion.div>
                 )}
@@ -2348,38 +3147,38 @@ function App() {
                 {detailTab === "runtime" && (
                   <motion.div key="dt-runtime" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }}>
                     <div className="rounded-2xl border border-border bg-surface shadow-sm overflow-hidden">
-                      <PanelHeader title="Runtime Settings" subtitle="Server, access, metrics, prompt cache, and logging." />
+                      <PanelHeader title={t("providers.runtimeSettings")} subtitle={t("providers.runtimeSettingsSubtitle")} />
                       <div className="grid grid-cols-2 gap-5 p-6">
-                        <TextField label="Listen" value={valueAsString(config.server?.listen)} onChange={(v) => updateSection("server", "listen", v)} />
-                        <NumberField label="Timeout seconds" value={valueAsNumber(config.server?.request_timeout_secs)} onChange={(v) => updateSection("server", "request_timeout_secs", v)} />
-                        <NumberField label="Body limit MB" value={valueAsNumber(config.server?.body_limit_mb)} onChange={(v) => updateSection("server", "body_limit_mb", v)} />
-                        <NumberField label="Max concurrency" optional value={valueAsNumber(config.server?.max_concurrent_requests)} onChange={(v) => updateSection("server", "max_concurrent_requests", v)} />
-                        <NumberField label="Rate/minute" optional value={valueAsNumber(config.server?.rate_limit_per_minute)} onChange={(v) => updateSection("server", "rate_limit_per_minute", v)} />
-                        <SelectField label="Reasoning policy" value={valueAsString(config.server?.reasoning_policy || "fill_missing")} options={["preserve", "fill_missing", "cap", "force"]} onChange={(v) => updateSection("server", "reasoning_policy", v)} />
-                        <SelectField label="Default reasoning" value={valueAsString(config.server?.default_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
-                        <SelectField label="Max reasoning" value={valueAsString(config.server?.max_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "max_reasoning_effort", v)} />
-                        <NumberField label="Retry attempts" value={valueAsNumber(config.server?.retry_attempts)} onChange={(v) => updateSection("server", "retry_attempts", v)} />
-                        <NumberField label="Retry backoff ms" value={valueAsNumber(config.server?.retry_backoff_ms)} onChange={(v) => updateSection("server", "retry_backoff_ms", v)} />
-                        <NumberField label="Circuit failures" optional value={valueAsNumber(config.server?.circuit_breaker_failures)} onChange={(v) => updateSection("server", "circuit_breaker_failures", v)} />
-                        <NumberField label="Circuit cooldown" optional value={valueAsNumber(config.server?.circuit_breaker_cooldown_secs)} onChange={(v) => updateSection("server", "circuit_breaker_cooldown_secs", v)} />
-                          <SelectField label="Log level" value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
-                          <SelectField label="Log format" value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
-                          <BoolField label="ANSI logs" checked={valueAsBool(config.logging?.ansi)} onChange={(v) => updateSection("logging", "ansi", v)} />
-                        <BoolField label="Auth enabled" checked={valueAsBool(config.auth?.enabled)} onChange={(v) => updateSection("auth", "enabled", v)} />
-                        <TextField label="API keys env" value={valueAsString(config.auth?.api_keys_env)} onChange={(v) => updateSection("auth", "api_keys_env", v)} />
-                        <NumberField label="Per-key rate/minute" optional value={valueAsNumber(config.auth?.per_key_rate_limit_per_minute)} onChange={(v) => updateSection("auth", "per_key_rate_limit_per_minute", v)} />
-                        <NumberField label="Per-key concurrency" optional value={valueAsNumber(config.auth?.per_key_max_concurrent_requests)} onChange={(v) => updateSection("auth", "per_key_max_concurrent_requests", v)} />
-                        <BoolField label="Metrics enabled" checked={valueAsBool(config.metrics?.enabled, true)} onChange={(v) => updateSection("metrics", "enabled", v)} />
-                        <BoolField label="Anthropic cache control" checked={valueAsBool(config.prompt_cache?.auto_inject_anthropic_cache_control, true)} onChange={(v) => updateSection("prompt_cache", "auto_inject_anthropic_cache_control", v)} />
-                        <BoolField label="Cache system" checked={valueAsBool(config.prompt_cache?.cache_system, true)} onChange={(v) => updateSection("prompt_cache", "cache_system", v)} />
-                        <BoolField label="Cache tools" checked={valueAsBool(config.prompt_cache?.cache_tools, true)} onChange={(v) => updateSection("prompt_cache", "cache_tools", v)} />
-                        <BoolField label="Cache last user" checked={valueAsBool(config.prompt_cache?.cache_last_user_message, true)} onChange={(v) => updateSection("prompt_cache", "cache_last_user_message", v)} />
-                        <TextField label="OpenAI cache key" value={valueAsString(config.prompt_cache?.openai_prompt_cache_key)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_key", v)} />
-                        <TextField label="Retention" value={valueAsString(config.prompt_cache?.openai_prompt_cache_retention)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_retention", v)} />
-                        <BoolField label="Debug shape" checked={valueAsBool(config.prompt_cache?.debug_log_request_shape, true)} onChange={(v) => updateSection("prompt_cache", "debug_log_request_shape", v)} />
-                        <TextField label="Relocate byte range" value={valueAsString(config.prompt_cache?.relocate_system_prefix_range)} onChange={(v) => updateSection("prompt_cache", "relocate_system_prefix_range", v)} />
-                        <BoolField label="Log relocated text" checked={valueAsBool(config.prompt_cache?.log_relocated_system_text)} onChange={(v) => updateSection("prompt_cache", "log_relocated_system_text", v)} />
-                        <TextField label="Strip prefixes CSV" value={Array.isArray(config.prompt_cache?.strip_system_line_prefixes) ? (config.prompt_cache?.strip_system_line_prefixes as JsonValue[]).join(", ") : ""} onChange={(v) => updateSection("prompt_cache", "strip_system_line_prefixes", splitCsv(v))} />
+                        <TextField label={t("settings.listen")} value={valueAsString(config.server?.listen)} onChange={(v) => updateSection("server", "listen", v)} />
+                        <NumberField label={t("settings.timeoutSeconds")} value={valueAsNumber(config.server?.request_timeout_secs)} onChange={(v) => updateSection("server", "request_timeout_secs", v)} />
+                        <NumberField label={t("settings.bodyLimitMb")} value={valueAsNumber(config.server?.body_limit_mb)} onChange={(v) => updateSection("server", "body_limit_mb", v)} />
+                        <NumberField label={t("settings.maxConcurrency")} optional value={valueAsNumber(config.server?.max_concurrent_requests)} onChange={(v) => updateSection("server", "max_concurrent_requests", v)} />
+                        <NumberField label={t("settings.rateMinute")} optional value={valueAsNumber(config.server?.rate_limit_per_minute)} onChange={(v) => updateSection("server", "rate_limit_per_minute", v)} />
+                        <SelectField label={t("settings.reasoningPolicy")} value={valueAsString(config.server?.reasoning_policy || "fill_missing")} options={["preserve", "fill_missing", "cap", "force"]} onChange={(v) => updateSection("server", "reasoning_policy", v)} />
+                        <SelectField label={t("settings.defaultReasoning")} value={valueAsString(config.server?.default_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
+                        <SelectField label={t("settings.maxReasoning")} value={valueAsString(config.server?.max_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "max_reasoning_effort", v)} />
+                        <NumberField label={t("settings.retryAttempts")} value={valueAsNumber(config.server?.retry_attempts)} onChange={(v) => updateSection("server", "retry_attempts", v)} />
+                        <NumberField label={t("settings.retryBackoffMs")} value={valueAsNumber(config.server?.retry_backoff_ms)} onChange={(v) => updateSection("server", "retry_backoff_ms", v)} />
+                        <NumberField label={t("settings.circuitFailures")} optional value={valueAsNumber(config.server?.circuit_breaker_failures)} onChange={(v) => updateSection("server", "circuit_breaker_failures", v)} />
+                        <NumberField label={t("settings.circuitCooldown")} optional value={valueAsNumber(config.server?.circuit_breaker_cooldown_secs)} onChange={(v) => updateSection("server", "circuit_breaker_cooldown_secs", v)} />
+                          <SelectField label={t("settings.logLevel")} value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
+                          <SelectField label={t("settings.logFormat")} value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
+                          <BoolField label={t("settings.ansiLogs")} checked={valueAsBool(config.logging?.ansi)} onChange={(v) => updateSection("logging", "ansi", v)} />
+                        <BoolField label={t("settings.authEnabled")} checked={valueAsBool(config.auth?.enabled)} onChange={(v) => updateSection("auth", "enabled", v)} />
+                        <TextField label={t("settings.apiKeysEnv")} value={valueAsString(config.auth?.api_keys_env)} onChange={(v) => updateSection("auth", "api_keys_env", v)} />
+                        <NumberField label={t("settings.perKeyRate")} optional value={valueAsNumber(config.auth?.per_key_rate_limit_per_minute)} onChange={(v) => updateSection("auth", "per_key_rate_limit_per_minute", v)} />
+                        <NumberField label={t("settings.perKeyConcurrency")} optional value={valueAsNumber(config.auth?.per_key_max_concurrent_requests)} onChange={(v) => updateSection("auth", "per_key_max_concurrent_requests", v)} />
+                        <BoolField label={t("settings.metricsEnabled")} checked={valueAsBool(config.metrics?.enabled, true)} onChange={(v) => updateSection("metrics", "enabled", v)} />
+                        <BoolField label={t("settings.anthropicCacheControl")} checked={valueAsBool(config.prompt_cache?.auto_inject_anthropic_cache_control, true)} onChange={(v) => updateSection("prompt_cache", "auto_inject_anthropic_cache_control", v)} />
+                        <BoolField label={t("settings.cacheSystem")} checked={valueAsBool(config.prompt_cache?.cache_system, true)} onChange={(v) => updateSection("prompt_cache", "cache_system", v)} />
+                        <BoolField label={t("settings.cacheTools")} checked={valueAsBool(config.prompt_cache?.cache_tools, true)} onChange={(v) => updateSection("prompt_cache", "cache_tools", v)} />
+                        <BoolField label={t("settings.cacheLastUser")} checked={valueAsBool(config.prompt_cache?.cache_last_user_message, true)} onChange={(v) => updateSection("prompt_cache", "cache_last_user_message", v)} />
+                        <TextField label={t("settings.openaiCacheKey")} value={valueAsString(config.prompt_cache?.openai_prompt_cache_key)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_key", v)} />
+                        <TextField label={t("settings.retention")} value={valueAsString(config.prompt_cache?.openai_prompt_cache_retention)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_retention", v)} />
+                        <BoolField label={t("settings.debugShape")} checked={valueAsBool(config.prompt_cache?.debug_log_request_shape, true)} onChange={(v) => updateSection("prompt_cache", "debug_log_request_shape", v)} />
+                        <TextField label={t("settings.relocateByteRange")} value={valueAsString(config.prompt_cache?.relocate_system_prefix_range)} onChange={(v) => updateSection("prompt_cache", "relocate_system_prefix_range", v)} />
+                        <BoolField label={t("settings.logRelocatedText")} checked={valueAsBool(config.prompt_cache?.log_relocated_system_text)} onChange={(v) => updateSection("prompt_cache", "log_relocated_system_text", v)} />
+                        <TextField label={t("settings.stripPrefixesCsv")} value={Array.isArray(config.prompt_cache?.strip_system_line_prefixes) ? (config.prompt_cache?.strip_system_line_prefixes as JsonValue[]).join(", ") : ""} onChange={(v) => updateSection("prompt_cache", "strip_system_line_prefixes", splitCsv(v))} />
                       </div>
                     </div>
                   </motion.div>
@@ -2388,12 +3187,12 @@ function App() {
 
               {/* Validation */}
               <div className="rounded-2xl border border-border bg-surface overflow-hidden">
-                <h2 className="border-b border-border px-5 py-4 text-sm font-bold text-heading">Validation</h2>
+                <h2 className="border-b border-border px-5 py-4 text-sm font-bold text-heading">{t("common.validation")}</h2>
                 <pre className={cn(
                   "h-40 overflow-auto p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap",
                   validation?.ok ? "text-success" : "text-fg"
                 )}>
-                  {validation ? `${validation.stdout}${validation.stderr}`.trim() || "config ok" : "Not validated yet."}
+                  {validation ? `${validation.stdout}${validation.stderr}`.trim() || t("common.configOk") : t("common.notValidated")}
                 </pre>
               </div>
             </motion.div>
@@ -2412,16 +3211,16 @@ function App() {
               <section className="rounded-lg border border-border bg-surface">
                 <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4">
                   <div className="flex items-start gap-3">
-                    <Button icon={<ChevronDown size={14} className="rotate-90" />} onClick={() => setActiveView("launcher")}>Back</Button>
+                    <Button icon={<ChevronDown size={14} className="rotate-90" />} onClick={() => setActiveView("launcher")}>{t("common.back")}</Button>
                     <div>
-                    <p className="text-xs font-bold uppercase text-muted">Global settings</p>
-                    <h1 className="mt-1 text-xl font-bold text-heading">Settings</h1>
-                    <p className="mt-1 text-sm text-muted">Runtime, security, cache, data, and desktop preferences.</p>
+                    <p className="text-xs font-bold uppercase text-muted">{t("settings.global")}</p>
+                    <h1 className="mt-1 text-xl font-bold text-heading">{t("settings.title")}</h1>
+                    <p className="mt-1 text-sm text-muted">{t("settings.subtitle")}</p>
                     </div>
                   </div>
                   <div className="flex gap-2">
-                    <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>Validate</Button>
-                    <Button variant="primary" icon={<Save size={14} />} onClick={saveConfig} disabled={busy}>Save</Button>
+                    <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>{t("common.validate")}</Button>
+                    <Button variant="primary" icon={<Save size={14} />} onClick={saveConfig} disabled={busy}>{t("common.save")}</Button>
                   </div>
                 </div>
               </section>
@@ -2429,12 +3228,12 @@ function App() {
               <section className="rounded-lg border border-border bg-surface p-1">
                 <div className="grid grid-cols-2 gap-1 sm:grid-cols-3 lg:grid-cols-6">
                   {([
-                    { tab: "general" as SettingsTab, icon: <Monitor size={15} />, label: "General" },
-                    { tab: "runtime" as SettingsTab, icon: <Gauge size={15} />, label: "Runtime" },
-                    { tab: "security" as SettingsTab, icon: <ShieldCheck size={15} />, label: "Security" },
-                    { tab: "cache" as SettingsTab, icon: <Database size={15} />, label: "Cache" },
-                    { tab: "advanced" as SettingsTab, icon: <SlidersHorizontal size={15} />, label: "Advanced" },
-                    { tab: "about" as SettingsTab, icon: <Activity size={15} />, label: "About" },
+                    { tab: "general" as SettingsTab, icon: <Monitor size={15} />, label: t("settings.general") },
+                    { tab: "runtime" as SettingsTab, icon: <Gauge size={15} />, label: t("settings.runtime") },
+                    { tab: "security" as SettingsTab, icon: <ShieldCheck size={15} />, label: t("settings.security") },
+                    { tab: "cache" as SettingsTab, icon: <Database size={15} />, label: t("settings.cache") },
+                    { tab: "advanced" as SettingsTab, icon: <SlidersHorizontal size={15} />, label: t("settings.advanced") },
+                    { tab: "about" as SettingsTab, icon: <Activity size={15} />, label: t("settings.about") },
                   ]).map(({ tab, icon, label }) => (
                     <SettingsTabButton
                       key={tab}
@@ -2451,33 +3250,33 @@ function App() {
                 {settingsTab === "general" && (
                   <motion.div key="settings-general" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5 lg:grid-cols-[1.1fr_0.9fr]">
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="Appearance" subtitle="Theme and launcher defaults." />
+                      <PanelHeader title={t("settings.appearance")} subtitle={t("settings.appearanceSubtitle")} />
                       <div className="grid gap-4 p-5">
                         <div>
-                          <span className="mb-2 block text-sm font-semibold text-label">Theme</span>
+                          <span className="mb-2 block text-sm font-semibold text-label">{t("settings.theme")}</span>
                           <div className="grid grid-cols-2 gap-2 rounded-lg border border-border bg-bg p-1">
                             <button type="button" onClick={() => setDarkMode(false)} className={cn("inline-flex h-10 items-center justify-center gap-2 rounded-md text-sm font-semibold transition-colors", !darkMode ? "bg-primary text-white" : "text-muted hover:bg-surface-hover hover:text-heading")}>
-                              <Sun size={15} /> Light
+                              <Sun size={15} /> {t("settings.light")}
                             </button>
                             <button type="button" onClick={() => setDarkMode(true)} className={cn("inline-flex h-10 items-center justify-center gap-2 rounded-md text-sm font-semibold transition-colors", darkMode ? "bg-primary text-white" : "text-muted hover:bg-surface-hover hover:text-heading")}>
-                              <Moon size={15} /> Dark
+                              <Moon size={15} /> {t("settings.dark")}
                             </button>
                           </div>
                         </div>
-                        <SelectField label="Default launcher" value={launchTool} options={["codex", "claude", "opencode"]} onChange={(v) => setLaunchTool(v as AITool)} />
-                        <SettingsInfoRow icon={<Bell size={15} />} label="Desktop notifications" value="Planned" tone="muted" />
-                        <SettingsInfoRow icon={<Wrench size={15} />} label="Auto start ferryllm" value="Planned" tone="muted" />
+                        <SelectField label={t("settings.defaultLauncher")} value={launchTool} options={["codex", "claude", "opencode"]} onChange={(v) => setLaunchTool(v as AITool)} />
+                        <SettingsInfoRow icon={<Bell size={15} />} label={t("settings.desktopNotifications")} value={t("common.planned")} tone="muted" />
+                        <SettingsInfoRow icon={<Wrench size={15} />} label={t("settings.autoStart")} value={t("common.planned")} tone="muted" />
                       </div>
                     </section>
 
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="Local Files" subtitle="Executable and generated config paths." />
+                      <PanelHeader title={t("settings.localFiles")} subtitle={t("settings.localFilesSubtitle")} />
                       <div className="grid gap-3 p-5">
-                        <SettingsInfoRow icon={<Terminal size={15} />} label="Executable" value={executable || "ferryllm"} />
-                        <SettingsInfoRow icon={<FileCog size={15} />} label="Config path" value={status?.config_path || "Default app config"} />
-                        <SettingsInfoRow icon={<Activity size={15} />} label="Runtime" value={gatewayStatusDetail(status)} tone={gatewayStatusTone(status)} />
-                        <SettingsInfoRow icon={<Route size={15} />} label="Routes" value={`${routes.length} configured`} />
-                        <SettingsInfoRow icon={<Network size={15} />} label="Providers" value={`${providers.length} configured`} />
+                        <SettingsInfoRow icon={<Terminal size={15} />} label={t("settings.executable")} value={executable || "ferryllm"} />
+                        <SettingsInfoRow icon={<FileCog size={15} />} label={t("settings.configPath")} value={status?.config_path || "Default app config"} />
+                        <SettingsInfoRow icon={<Activity size={15} />} label={t("settings.runtime")} value={gatewayStatusDetailText(status, t)} tone={gatewayStatusTone(status)} />
+                        <SettingsInfoRow icon={<Route size={15} />} label={t("providers.routes")} value={tf("settings.routesConfigured", { count: routes.length })} />
+                        <SettingsInfoRow icon={<Network size={15} />} label={t("nav.providers")} value={tf("settings.providersConfigured", { count: providers.length })} />
                       </div>
                     </section>
                   </motion.div>
@@ -2486,38 +3285,38 @@ function App() {
                 {settingsTab === "runtime" && (
                   <motion.div key="settings-runtime" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5">
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="Server" subtitle="Listener, limits, request pressure, and default reasoning." />
+                      <PanelHeader title={t("settings.server")} subtitle={t("settings.serverSubtitle")} />
                       <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3">
-                        <TextField label="Listen" value={valueAsString(config.server?.listen)} onChange={(v) => updateSection("server", "listen", v)} />
-                        <NumberField label="Timeout seconds" value={valueAsNumber(config.server?.request_timeout_secs)} onChange={(v) => updateSection("server", "request_timeout_secs", v)} />
-                        <NumberField label="Body limit MB" value={valueAsNumber(config.server?.body_limit_mb)} onChange={(v) => updateSection("server", "body_limit_mb", v)} />
-                        <NumberField label="Max concurrency" optional value={valueAsNumber(config.server?.max_concurrent_requests)} onChange={(v) => updateSection("server", "max_concurrent_requests", v)} />
-                        <NumberField label="Rate/minute" optional value={valueAsNumber(config.server?.rate_limit_per_minute)} onChange={(v) => updateSection("server", "rate_limit_per_minute", v)} />
-                        <SelectField label="Reasoning policy" value={valueAsString(config.server?.reasoning_policy || "fill_missing")} options={["preserve", "fill_missing", "cap", "force"]} onChange={(v) => updateSection("server", "reasoning_policy", v)} />
-                        <SelectField label="Default reasoning" value={valueAsString(config.server?.default_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
-                        <SelectField label="Max reasoning" value={valueAsString(config.server?.max_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "max_reasoning_effort", v)} />
+                        <TextField label={t("settings.listen")} value={valueAsString(config.server?.listen)} onChange={(v) => updateSection("server", "listen", v)} />
+                        <NumberField label={t("settings.timeoutSeconds")} value={valueAsNumber(config.server?.request_timeout_secs)} onChange={(v) => updateSection("server", "request_timeout_secs", v)} />
+                        <NumberField label={t("settings.bodyLimitMb")} value={valueAsNumber(config.server?.body_limit_mb)} onChange={(v) => updateSection("server", "body_limit_mb", v)} />
+                        <NumberField label={t("settings.maxConcurrency")} optional value={valueAsNumber(config.server?.max_concurrent_requests)} onChange={(v) => updateSection("server", "max_concurrent_requests", v)} />
+                        <NumberField label={t("settings.rateMinute")} optional value={valueAsNumber(config.server?.rate_limit_per_minute)} onChange={(v) => updateSection("server", "rate_limit_per_minute", v)} />
+                        <SelectField label={t("settings.reasoningPolicy")} value={valueAsString(config.server?.reasoning_policy || "fill_missing")} options={["preserve", "fill_missing", "cap", "force"]} onChange={(v) => updateSection("server", "reasoning_policy", v)} />
+                        <SelectField label={t("settings.defaultReasoning")} value={valueAsString(config.server?.default_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "default_reasoning_effort", v)} />
+                        <SelectField label={t("settings.maxReasoning")} value={valueAsString(config.server?.max_reasoning_effort)} options={REASONING_OPTIONS} onChange={(v) => updateSection("server", "max_reasoning_effort", v)} />
                       </div>
                     </section>
 
                     <section className="grid gap-5 lg:grid-cols-2">
                       <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <PanelHeader title="Reliability" subtitle="Retry and circuit breaker defaults." />
+                        <PanelHeader title={t("settings.reliability")} subtitle={t("settings.reliabilitySubtitle")} />
                         <div className="grid gap-4 p-5 sm:grid-cols-2">
-                          <NumberField label="Retry attempts" value={valueAsNumber(config.server?.retry_attempts)} onChange={(v) => updateSection("server", "retry_attempts", v)} />
-                          <NumberField label="Retry backoff ms" value={valueAsNumber(config.server?.retry_backoff_ms)} onChange={(v) => updateSection("server", "retry_backoff_ms", v)} />
-                          <NumberField label="Circuit failures" optional value={valueAsNumber(config.server?.circuit_breaker_failures)} onChange={(v) => updateSection("server", "circuit_breaker_failures", v)} />
-                          <NumberField label="Circuit cooldown" optional value={valueAsNumber(config.server?.circuit_breaker_cooldown_secs)} onChange={(v) => updateSection("server", "circuit_breaker_cooldown_secs", v)} />
+                          <NumberField label={t("settings.retryAttempts")} value={valueAsNumber(config.server?.retry_attempts)} onChange={(v) => updateSection("server", "retry_attempts", v)} />
+                          <NumberField label={t("settings.retryBackoffMs")} value={valueAsNumber(config.server?.retry_backoff_ms)} onChange={(v) => updateSection("server", "retry_backoff_ms", v)} />
+                          <NumberField label={t("settings.circuitFailures")} optional value={valueAsNumber(config.server?.circuit_breaker_failures)} onChange={(v) => updateSection("server", "circuit_breaker_failures", v)} />
+                          <NumberField label={t("settings.circuitCooldown")} optional value={valueAsNumber(config.server?.circuit_breaker_cooldown_secs)} onChange={(v) => updateSection("server", "circuit_breaker_cooldown_secs", v)} />
                         </div>
                       </div>
 
                       <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <PanelHeader title="Logging & Metrics" subtitle="Local logs and Prometheus endpoint." />
+                        <PanelHeader title={t("settings.loggingMetrics")} subtitle={t("settings.loggingMetricsSubtitle")} />
                         <div className="grid gap-4 p-5 sm:grid-cols-2">
-                        <SelectField label="Log level" value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
-                        <SelectField label="Log format" value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
-                        <BoolField label="ANSI logs" checked={valueAsBool(config.logging?.ansi)} onChange={(v) => updateSection("logging", "ansi", v)} />
-                          <BoolField label="Metrics enabled" checked={valueAsBool(config.metrics?.enabled, true)} onChange={(v) => updateSection("metrics", "enabled", v)} />
-                          <SettingsInfoRow icon={<BarChart3 size={15} />} label="Dashboard refresh" value="3s" />
+                        <SelectField label={t("settings.logLevel")} value={valueAsString(config.logging?.level)} options={["trace", "debug", "info", "warn", "error"]} onChange={(v) => updateSection("logging", "level", v)} />
+                        <SelectField label={t("settings.logFormat")} value={valueAsString(config.logging?.format)} options={["text", "json"]} onChange={(v) => updateSection("logging", "format", v)} />
+                        <BoolField label={t("settings.ansiLogs")} checked={valueAsBool(config.logging?.ansi)} onChange={(v) => updateSection("logging", "ansi", v)} />
+                          <BoolField label={t("settings.metricsEnabled")} checked={valueAsBool(config.metrics?.enabled, true)} onChange={(v) => updateSection("metrics", "enabled", v)} />
+                          <SettingsInfoRow icon={<BarChart3 size={15} />} label={t("settings.dashboardRefresh")} value="3s" />
                         </div>
                       </div>
                     </section>
@@ -2527,23 +3326,23 @@ function App() {
                 {settingsTab === "security" && (
                   <motion.div key="settings-security" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5 lg:grid-cols-[0.95fr_1.05fr]">
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="Access Control" subtitle="Optional local auth and per-key pressure controls." />
+                      <PanelHeader title={t("settings.accessControl")} subtitle={t("settings.accessControlSubtitle")} />
                       <div className="grid gap-4 p-5">
-                        <BoolField label="Auth enabled" checked={valueAsBool(config.auth?.enabled)} onChange={(v) => updateSection("auth", "enabled", v)} />
-                        <TextField label="API keys env" value={valueAsString(config.auth?.api_keys_env)} onChange={(v) => updateSection("auth", "api_keys_env", v)} />
-                        <NumberField label="Per-key rate/minute" optional value={valueAsNumber(config.auth?.per_key_rate_limit_per_minute)} onChange={(v) => updateSection("auth", "per_key_rate_limit_per_minute", v)} />
-                        <NumberField label="Per-key concurrency" optional value={valueAsNumber(config.auth?.per_key_max_concurrent_requests)} onChange={(v) => updateSection("auth", "per_key_max_concurrent_requests", v)} />
+                        <BoolField label={t("settings.authEnabled")} checked={valueAsBool(config.auth?.enabled)} onChange={(v) => updateSection("auth", "enabled", v)} />
+                        <TextField label={t("settings.apiKeysEnv")} value={valueAsString(config.auth?.api_keys_env)} onChange={(v) => updateSection("auth", "api_keys_env", v)} />
+                        <NumberField label={t("settings.perKeyRate")} optional value={valueAsNumber(config.auth?.per_key_rate_limit_per_minute)} onChange={(v) => updateSection("auth", "per_key_rate_limit_per_minute", v)} />
+                        <NumberField label={t("settings.perKeyConcurrency")} optional value={valueAsNumber(config.auth?.per_key_max_concurrent_requests)} onChange={(v) => updateSection("auth", "per_key_max_concurrent_requests", v)} />
                       </div>
                     </section>
 
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="Secrets" subtitle="Key handling status for this desktop session." />
+                      <PanelHeader title={t("settings.secrets")} subtitle={t("settings.secretsSubtitle")} />
                       <div className="grid gap-3 p-5">
-                        <SettingsInfoRow icon={<Lock size={15} />} label="Direct key input" value="Masked by default" tone="success" />
-                        <SettingsInfoRow icon={<HardDriveDownload size={15} />} label="Autosave direct keys" value="Excluded" tone="success" />
-                        <SettingsInfoRow icon={<Save size={15} />} label="Runnable config" value="Explicit Save/Start only" />
-                        <SettingsInfoRow icon={<KeyRound size={15} />} label="Provider key sources" value={`${providers.filter((provider) => providerKeyInfo(provider).ok).length}/${providers.length || 0} ready`} tone={providers.length && providers.every((provider) => providerKeyInfo(provider).ok) ? "success" : "warning"} />
-                        <SettingsInfoRow icon={<ShieldCheck size={15} />} label="Credential vault" value="Planned" tone="muted" />
+                        <SettingsInfoRow icon={<Lock size={15} />} label={t("settings.directKeyInput")} value={t("settings.maskedDefault")} tone="success" />
+                        <SettingsInfoRow icon={<HardDriveDownload size={15} />} label={t("settings.autosaveDirectKeys")} value={t("settings.excluded")} tone="success" />
+                        <SettingsInfoRow icon={<Save size={15} />} label={t("settings.runnableConfig")} value={t("settings.explicitSaveStart")} />
+                        <SettingsInfoRow icon={<KeyRound size={15} />} label={t("settings.providerKeySources")} value={`${providers.filter((provider) => providerKeyInfo(provider).ok).length}/${providers.length || 0} ${t("settings.ready")}`} tone={providers.length && providers.every((provider) => providerKeyInfo(provider).ok) ? "success" : "warning"} />
+                        <SettingsInfoRow icon={<ShieldCheck size={15} />} label={t("settings.credentialVault")} value={t("common.planned")} tone="muted" />
                       </div>
                     </section>
                   </motion.div>
@@ -2552,19 +3351,19 @@ function App() {
                 {settingsTab === "cache" && (
                   <motion.div key="settings-cache" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5">
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="Prompt Cache" subtitle="Anthropic cache control and OpenAI prompt-cache hints." />
+                      <PanelHeader title={t("dashboard.promptCache")} subtitle={t("settings.promptCacheSubtitle")} />
                       <div className="grid gap-4 p-5 sm:grid-cols-2 lg:grid-cols-3">
-                        <BoolField label="Anthropic cache control" checked={valueAsBool(config.prompt_cache?.auto_inject_anthropic_cache_control, true)} onChange={(v) => updateSection("prompt_cache", "auto_inject_anthropic_cache_control", v)} />
-                        <BoolField label="Cache system" checked={valueAsBool(config.prompt_cache?.cache_system, true)} onChange={(v) => updateSection("prompt_cache", "cache_system", v)} />
-                        <BoolField label="Cache tools" checked={valueAsBool(config.prompt_cache?.cache_tools, true)} onChange={(v) => updateSection("prompt_cache", "cache_tools", v)} />
-                        <BoolField label="Cache last user" checked={valueAsBool(config.prompt_cache?.cache_last_user_message, true)} onChange={(v) => updateSection("prompt_cache", "cache_last_user_message", v)} />
-                        <BoolField label="Debug shape" checked={valueAsBool(config.prompt_cache?.debug_log_request_shape, true)} onChange={(v) => updateSection("prompt_cache", "debug_log_request_shape", v)} />
-                        <BoolField label="Log relocated text" checked={valueAsBool(config.prompt_cache?.log_relocated_system_text)} onChange={(v) => updateSection("prompt_cache", "log_relocated_system_text", v)} />
-                        <TextField label="OpenAI cache key" value={valueAsString(config.prompt_cache?.openai_prompt_cache_key)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_key", v)} />
-                        <TextField label="Retention" value={valueAsString(config.prompt_cache?.openai_prompt_cache_retention)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_retention", v)} />
-                        <TextField label="Relocate byte range" value={valueAsString(config.prompt_cache?.relocate_system_prefix_range)} onChange={(v) => updateSection("prompt_cache", "relocate_system_prefix_range", v)} />
+                        <BoolField label={t("settings.anthropicCacheControl")} checked={valueAsBool(config.prompt_cache?.auto_inject_anthropic_cache_control, true)} onChange={(v) => updateSection("prompt_cache", "auto_inject_anthropic_cache_control", v)} />
+                        <BoolField label={t("settings.cacheSystem")} checked={valueAsBool(config.prompt_cache?.cache_system, true)} onChange={(v) => updateSection("prompt_cache", "cache_system", v)} />
+                        <BoolField label={t("settings.cacheTools")} checked={valueAsBool(config.prompt_cache?.cache_tools, true)} onChange={(v) => updateSection("prompt_cache", "cache_tools", v)} />
+                        <BoolField label={t("settings.cacheLastUser")} checked={valueAsBool(config.prompt_cache?.cache_last_user_message, true)} onChange={(v) => updateSection("prompt_cache", "cache_last_user_message", v)} />
+                        <BoolField label={t("settings.debugShape")} checked={valueAsBool(config.prompt_cache?.debug_log_request_shape, true)} onChange={(v) => updateSection("prompt_cache", "debug_log_request_shape", v)} />
+                        <BoolField label={t("settings.logRelocatedText")} checked={valueAsBool(config.prompt_cache?.log_relocated_system_text)} onChange={(v) => updateSection("prompt_cache", "log_relocated_system_text", v)} />
+                        <TextField label={t("settings.openaiCacheKey")} value={valueAsString(config.prompt_cache?.openai_prompt_cache_key)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_key", v)} />
+                        <TextField label={t("settings.retention")} value={valueAsString(config.prompt_cache?.openai_prompt_cache_retention)} onChange={(v) => updateSection("prompt_cache", "openai_prompt_cache_retention", v)} />
+                        <TextField label={t("settings.relocateByteRange")} value={valueAsString(config.prompt_cache?.relocate_system_prefix_range)} onChange={(v) => updateSection("prompt_cache", "relocate_system_prefix_range", v)} />
                         <div className="sm:col-span-2 lg:col-span-3">
-                          <TextField label="Strip prefixes CSV" value={Array.isArray(config.prompt_cache?.strip_system_line_prefixes) ? (config.prompt_cache?.strip_system_line_prefixes as JsonValue[]).join(", ") : ""} onChange={(v) => updateSection("prompt_cache", "strip_system_line_prefixes", splitCsv(v))} />
+                          <TextField label={t("settings.stripPrefixesCsv")} value={Array.isArray(config.prompt_cache?.strip_system_line_prefixes) ? (config.prompt_cache?.strip_system_line_prefixes as JsonValue[]).join(", ") : ""} onChange={(v) => updateSection("prompt_cache", "strip_system_line_prefixes", splitCsv(v))} />
                         </div>
                       </div>
                     </section>
@@ -2575,22 +3374,22 @@ function App() {
                   <motion.div key="settings-advanced" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5">
                     <section className="grid gap-5 lg:grid-cols-2">
                       <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <PanelHeader title="Data & Sync" subtitle="Config movement and backup entry points." />
+                        <PanelHeader title={t("settings.dataSync")} subtitle={t("settings.dataSyncSubtitle")} />
                         <div className="grid gap-3 p-5">
-                          <SettingsFeatureRow icon={<Upload size={15} />} title="Import config" status="Planned" />
-                          <SettingsFeatureRow icon={<Download size={15} />} title="Export config" status="Planned" />
-                          <SettingsFeatureRow icon={<HardDriveDownload size={15} />} title="Backup & rollback" status="Partial" detail="Save uses .bak rollback" />
-                          <SettingsFeatureRow icon={<Cloud size={15} />} title="WebDAV sync" status="Planned" />
+                          <SettingsFeatureRow icon={<Upload size={15} />} title={t("settings.importConfig")} status={t("common.planned")} />
+                          <SettingsFeatureRow icon={<Download size={15} />} title={t("settings.exportConfig")} status={t("common.planned")} />
+                          <SettingsFeatureRow icon={<HardDriveDownload size={15} />} title={t("settings.backupRollback")} status={t("common.partial")} detail={t("settings.backupRollbackDetail")} />
+                          <SettingsFeatureRow icon={<Cloud size={15} />} title={t("settings.webdavSync")} status={t("common.planned")} />
                         </div>
                       </div>
 
                       <div className="rounded-lg border border-border bg-surface overflow-hidden">
-                        <PanelHeader title="Provider Tooling" subtitle="Operational controls planned around providers." />
+                        <PanelHeader title={t("settings.providerTooling")} subtitle={t("settings.providerToolingSubtitle")} />
                         <div className="grid gap-3 p-5">
-                          <SettingsFeatureRow icon={<DollarSign size={15} />} title="Usage adapters" status="Partial" detail="Provider cards can probe common endpoints" />
-                          <SettingsFeatureRow icon={<RefreshCw size={15} />} title="Model fetch dropdown" status="Planned" />
-                          <SettingsFeatureRow icon={<Route size={15} />} title="Failover queue editor" status="Planned" />
-                          <SettingsFeatureRow icon={<Network size={15} />} title="Global outbound proxy" status="Planned" />
+                          <SettingsFeatureRow icon={<DollarSign size={15} />} title={t("settings.usageAdapters")} status={t("common.partial")} detail={t("settings.usageAdaptersDetail")} />
+                          <SettingsFeatureRow icon={<RefreshCw size={15} />} title={t("settings.modelFetchDropdown")} status={t("common.planned")} />
+                          <SettingsFeatureRow icon={<Route size={15} />} title={t("settings.failoverQueueEditor")} status={t("common.planned")} />
+                          <SettingsFeatureRow icon={<Network size={15} />} title={t("settings.globalOutboundProxy")} status={t("common.planned")} />
                         </div>
                       </div>
                     </section>
@@ -2598,16 +3397,16 @@ function App() {
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
                       <div className="flex items-center justify-between border-b border-border px-5 py-4">
                         <div>
-                          <h2 className="text-sm font-bold text-heading">Validation</h2>
-                          <p className="mt-1 text-xs text-muted">Result from ferryllm config validation.</p>
+                          <h2 className="text-sm font-bold text-heading">{t("common.validation")}</h2>
+                          <p className="mt-1 text-xs text-muted">{t("settings.validationSubtitle")}</p>
                         </div>
-                        <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>Run</Button>
+                        <Button icon={<CheckCircle2 size={14} />} onClick={validateConfig} disabled={busy}>{t("common.run")}</Button>
                       </div>
                       <pre className={cn(
                         "h-36 overflow-auto p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap",
                         validation?.ok ? "text-success" : "text-fg"
                       )}>
-                        {validation ? `${validation.stdout}${validation.stderr}`.trim() || "config ok" : "Not validated yet."}
+                        {validation ? `${validation.stdout}${validation.stderr}`.trim() || t("common.configOk") : t("common.notValidated")}
                       </pre>
                     </section>
                   </motion.div>
@@ -2616,19 +3415,19 @@ function App() {
                 {settingsTab === "about" && (
                   <motion.div key="settings-about" initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -8 }} transition={{ duration: 0.15 }} className="grid gap-5">
                     <section className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-                      <SettingsSummaryCard icon={<Network size={18} />} label="Providers" value={String(providers.length)} />
-                      <SettingsSummaryCard icon={<Route size={18} />} label="Routes" value={String(routes.length)} />
-                      <SettingsSummaryCard icon={<History size={18} />} label="Launches" value={String(recentLaunches.length)} />
-                      <SettingsSummaryCard icon={<Activity size={18} />} label="Status" value={status?.running ? "Running" : "Stopped"} tone={status?.running ? "success" : "muted"} />
+                      <SettingsSummaryCard icon={<Network size={18} />} label={t("nav.providers")} value={String(providers.length)} />
+                      <SettingsSummaryCard icon={<Route size={18} />} label={t("providers.routes")} value={String(routes.length)} />
+                      <SettingsSummaryCard icon={<History size={18} />} label={t("settings.launches")} value={String(recentLaunches.length)} />
+                      <SettingsSummaryCard icon={<Activity size={18} />} label={t("common.status")} value={status?.running ? t("common.running") : t("common.stopped")} tone={status?.running ? "success" : "muted"} />
                     </section>
 
                     <section className="rounded-lg border border-border bg-surface overflow-hidden">
-                      <PanelHeader title="ferryllm Desktop" subtitle="Local control panel for provider routing and launcher workflows." />
+                      <PanelHeader title="ferryllm Desktop" subtitle={t("settings.desktopSubtitle")} />
                       <div className="grid gap-3 p-5">
-                        <SettingsInfoRow icon={<Terminal size={15} />} label="Executable" value={executable || "ferryllm"} />
-                        <SettingsInfoRow icon={<FileCog size={15} />} label="Config path" value={status?.config_path || "Default app config"} />
-                        <SettingsInfoRow icon={<Gauge size={15} />} label="Listen" value={valueAsString(config.server?.listen) || "127.0.0.1:3000"} />
-                        <SettingsInfoRow icon={<BarChart3 size={15} />} label="Metrics" value={valueAsBool(config.metrics?.enabled, true) ? "Enabled" : "Disabled"} tone={valueAsBool(config.metrics?.enabled, true) ? "success" : "muted"} />
+                        <SettingsInfoRow icon={<Terminal size={15} />} label={t("settings.executable")} value={executable || "ferryllm"} />
+                        <SettingsInfoRow icon={<FileCog size={15} />} label={t("settings.configPath")} value={status?.config_path || "Default app config"} />
+                        <SettingsInfoRow icon={<Gauge size={15} />} label={t("settings.listen")} value={valueAsString(config.server?.listen) || "127.0.0.1:3000"} />
+                        <SettingsInfoRow icon={<BarChart3 size={15} />} label={t("dashboard.metrics")} value={valueAsBool(config.metrics?.enabled, true) ? t("common.enabled") : t("common.disabled")} tone={valueAsBool(config.metrics?.enabled, true) ? "success" : "muted"} />
                       </div>
                     </section>
                   </motion.div>
@@ -2684,6 +3483,7 @@ function App() {
 
       <ToastContainer toasts={toasts} onDismiss={(id) => setToasts((p) => p.filter((t) => t.id !== id))} />
     </div>
+    </I18nContext.Provider>
   );
 }
 
@@ -2706,28 +3506,31 @@ function AppSidebar({
   onSetView: (view: View) => void;
   onToggleTheme: () => void;
 }) {
+  const { locale, setLocale, t } = useI18n();
   const navItems = [
-    { view: "dashboard" as View, icon: <Route size={15} />, label: "Gateway" },
-    { view: "launcher" as View, icon: <FolderOpen size={15} />, label: "Launch" },
-    { view: "providers" as View, icon: <Network size={15} />, label: "Providers", count: providerCount },
-    { view: "usage-logs" as View, icon: <History size={15} />, label: "Usage Logs", count: logCount },
-    { view: "settings" as View, icon: <Settings size={15} />, label: "Settings" },
+    { view: "launcher" as View, icon: <FolderOpen size={15} />, label: t("nav.launcher") },
+    { view: "providers" as View, icon: <Network size={15} />, label: t("nav.providers"), count: providerCount },
+    { view: "dashboard" as View, icon: <BarChart3 size={15} />, label: t("nav.dashboard") },
+    { view: "usage-logs" as View, icon: <History size={15} />, label: t("nav.usageLogs"), count: logCount },
+    { view: "settings" as View, icon: <Settings size={15} />, label: t("nav.settings") },
   ];
 
   return (
-    <aside className="app-sidebar border-r border-border bg-surface">
+    <aside className="app-sidebar border-r border-border">
       <div className="px-5 py-5">
-        <button type="button" onClick={() => onSetView("dashboard")} className="flex w-full items-center gap-3 text-left">
-          <img src="/logo-light.png" alt="ferryllm" className="h-8 w-8 shrink-0 dark:hidden" />
-          <img src="/logo-dark.png" alt="ferryllm" className="h-8 w-8 shrink-0 hidden dark:block" />
+        <button type="button" onClick={() => onSetView("launcher")} className="flex w-full items-center gap-3 rounded-lg p-1 text-left transition-colors hover:bg-white/5">
+          <span className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-white/10 bg-white/[0.08] shadow-sm">
+            <img src="/logo-light.png" alt="ferryllm" className="h-7 w-7 dark:hidden" />
+            <img src="/logo-dark.png" alt="ferryllm" className="hidden h-7 w-7 dark:block" />
+          </span>
           <span className="min-w-0">
             <strong className="block text-base font-bold text-heading">ferryllm</strong>
-            <span className="block text-xs font-semibold text-muted">Local LLM routing control plane</span>
+            <span className="block text-xs font-semibold text-muted">{t("app.subtitle")}</span>
           </span>
         </button>
       </div>
 
-      <nav className="grid gap-1 px-3">
+      <nav className="grid gap-1 px-4">
         {navItems.map((item) => (
           <LauncherNavItem
             key={item.view}
@@ -2741,15 +3544,31 @@ function AppSidebar({
       </nav>
 
       <div className="mt-auto grid gap-2 border-t border-border p-4">
-        <SettingsInfoRow icon={<Activity size={15} />} label="Gateway" value={gatewayStatusLabel(status)} tone={gatewayStatusTone(status)} />
-        <SettingsInfoRow icon={<Network size={15} />} label="Provider" value={provider?.name || "Not selected"} tone={provider ? "success" : "warning"} />
+        <SettingsInfoRow icon={<Activity size={15} />} label={t("common.gateway")} value={t(gatewayStatusLabelKey(status))} tone={gatewayStatusTone(status)} />
+        <SettingsInfoRow icon={<Network size={15} />} label={t("nav.providers")} value={provider?.name || t("common.notSelected")} tone={provider ? "success" : "warning"} />
+        <div className="grid grid-cols-2 gap-1 rounded-lg bg-white/[0.06] p-1">
+          {(["zh-CN", "en"] as Locale[]).map((item) => (
+            <button
+              key={item}
+              type="button"
+              onClick={() => setLocale(item)}
+              className={cn(
+                "h-8 rounded-md text-xs font-bold transition-colors",
+                locale === item ? "bg-white/10 text-heading" : "text-muted hover:bg-white/[0.08] hover:text-heading"
+              )}
+              title={t("common.language")}
+            >
+              {item === "zh-CN" ? "中文" : "EN"}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
           onClick={onToggleTheme}
-          className="mt-1 flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-bold text-muted transition-colors hover:bg-muted-soft hover:text-heading"
+          className="mt-1 flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-bold text-muted transition-colors hover:bg-white/10 hover:text-heading"
         >
           {darkMode ? <Sun size={15} /> : <Moon size={15} />}
-          <span>{darkMode ? "Light mode" : "Dark mode"}</span>
+          <span>{darkMode ? t("common.lightMode") : t("common.darkMode")}</span>
         </button>
       </div>
     </aside>
@@ -2813,42 +3632,29 @@ function LauncherView({
   onSetWorkspaceReasoning: (path: string, reasoningEffort: string) => void;
   onTogglePin: (path: string) => void;
 }) {
+  const { t } = useI18n();
   const hasWorkspaces = filteredWorkspaces.length > 0;
-  const nativeSessionCount = aiSessions.length;
-  const selectedProviderName = selectedWorkspace?.defaultProviderName || providers[0]?.name || "No provider";
   return (
     <section className="launcher-shell overflow-hidden rounded-lg border border-border bg-surface">
       <main className="min-w-0">
-        <div className="launcher-hero">
-          <div className="launcher-hero-copy">
-            <p className="launcher-eyebrow">Launch workbench</p>
-            <h1>Start Codex, Claude Code, and OpenCode through ferryllm.</h1>
-            <p>Pick a workspace, bind a provider route, choose reasoning, then launch your coding tool with the right local gateway environment.</p>
-          </div>
-          <div className="launcher-hero-actions">
-            <Button variant="primary" icon={<Plus size={14} />} onClick={onCreateWorkspace}>New project</Button>
-            <Button icon={<FolderOpen size={14} />} onClick={onAddWorkspace}>Open project</Button>
-          </div>
-          <div className="launcher-hero-metrics">
-            <LauncherMetric icon={<FolderOpen size={15} />} label="Projects" value={String(filteredWorkspaces.length)} detail={selectedWorkspace?.name || "No project selected"} />
-            <LauncherMetric icon={<Network size={15} />} label="Provider" value={selectedProviderName} detail={`${providers.length} configured`} />
-            <LauncherMetric icon={<History size={15} />} label="Sessions" value={String(nativeSessionCount)} detail={`${selectedWorkspaceSessions.length} in current project`} />
-          </div>
-        </div>
-
         <div className="launcher-welcome-header">
-          <div className="relative min-w-[240px] flex-1">
+          <div className="launcher-welcome-title">
+            <p className="text-xs font-bold uppercase text-muted">{t("launcher.title")}</p>
+            <h1 className="mt-1 text-lg font-bold text-heading">{t("launcher.projects")}</h1>
+          </div>
+          <div className="launcher-actions">
+            <Button icon={<Plus size={14} />} onClick={onCreateWorkspace}>{t("launcher.newProject")}</Button>
+            <Button icon={<FolderOpen size={14} />} onClick={onAddWorkspace}>{t("launcher.open")}</Button>
+            <Button icon={<Download size={14} />} onClick={() => undefined} disabled>{t("launcher.cloneRepo")}</Button>
+          </div>
+          <div className="launcher-search relative">
             <Search size={16} className="provider-search-icon pointer-events-none absolute top-1/2 -translate-y-1/2 text-icon" />
             <input
               value={workspaceSearch}
               onChange={(event) => onSetWorkspaceSearch(event.currentTarget.value)}
-              placeholder="Search projects"
+              placeholder={t("launcher.search")}
               className="provider-search-input h-10"
             />
-          </div>
-          <div className="flex flex-wrap justify-end gap-2">
-            <Button icon={<Network size={14} />} onClick={() => selectedWorkspace && onLaunchWorkspace(selectedWorkspace, selectedWorkspace.defaultLaunchType, selectedWorkspace.defaultTool)} disabled={!selectedWorkspace || !providers.length}>Launch selected</Button>
-            <Button icon={<Download size={14} />} onClick={() => undefined} disabled>Clone repo</Button>
           </div>
         </div>
 
@@ -2857,19 +3663,19 @@ function LauncherView({
             <section className="launcher-empty-projects">
               <History size={42} className="text-muted" />
               <div>
-                <h2 className="text-xl font-bold text-heading">No projects yet</h2>
-                <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">Create or open a workspace, then launch Codex, Claude, VS Code, or resume indexed sessions from the project row.</p>
+                <h2 className="text-xl font-bold text-heading">{t("launcher.noProjects")}</h2>
+                <p className="mt-2 max-w-xl text-sm leading-relaxed text-muted">{t("launcher.noProjectsDetail")}</p>
               </div>
               <div className="flex flex-wrap gap-2">
-                <Button variant="primary" icon={<Plus size={14} />} onClick={onCreateWorkspace}>New project</Button>
-                <Button icon={<FolderOpen size={14} />} onClick={onAddWorkspace}>Open project</Button>
+                <Button variant="primary" icon={<Plus size={14} />} onClick={onCreateWorkspace}>{t("launcher.newProject")}</Button>
+                <Button icon={<FolderOpen size={14} />} onClick={onAddWorkspace}>{t("launcher.openProject")}</Button>
               </div>
             </section>
           ) : (
             <div className="launcher-project-list">
               {favoriteWorkspaces.length ? (
                 <LauncherWorkspaceSection
-                  title="Favorites"
+                  title={t("launcher.favorites")}
                   workspaces={favoriteWorkspaces}
                   selectedPath={selectedWorkspace?.path}
                   nativeSessions={aiSessions}
@@ -2889,7 +3695,7 @@ function LauncherView({
                 />
               ) : null}
               <LauncherWorkspaceSection
-                title={workspaceQuery ? "Matching projects" : "Recent projects"}
+                title={workspaceQuery ? t("launcher.matchingProjects") : t("launcher.recentProjects")}
                 workspaces={recentWorkspaces}
                 selectedPath={selectedWorkspace?.path}
                 nativeSessions={aiSessions}
@@ -2906,7 +3712,7 @@ function LauncherView({
                 onTogglePin={onTogglePin}
                 onDelete={onDeleteWorkspace}
                 onDeleteDirectory={onDeleteWorkspaceDirectory}
-                emptyText={workspaceQuery ? "No project matches this search." : "No recent projects yet."}
+                emptyText={workspaceQuery ? t("launcher.noMatch") : t("launcher.noRecent")}
               />
             </div>
           )}
@@ -2929,27 +3735,14 @@ function LauncherView({
   );
 }
 
-function LauncherMetric({ icon, label, value, detail }: { icon: ReactNode; label: string; value: string; detail: string }) {
-  return (
-    <div className="launcher-metric">
-      <span>{icon}</span>
-      <div className="min-w-0">
-        <p>{label}</p>
-        <strong title={value}>{value}</strong>
-        <small title={detail}>{detail}</small>
-      </div>
-    </div>
-  );
-}
-
 function LauncherNavItem({ icon, label, count, active, onClick }: { icon: ReactNode; label: string; count?: number; active?: boolean; onClick?: () => void }) {
   return (
     <button
       type="button"
       onClick={onClick}
       className={cn(
-        "launcher-nav-item flex h-9 items-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors",
-        active ? "is-active shadow-sm" : "text-muted"
+        "app-nav-item flex h-10 items-center gap-2 rounded-lg px-3 text-sm font-bold transition-colors",
+        active ? "is-active bg-white/10 text-heading shadow-sm" : "text-muted hover:bg-white/[0.08] hover:text-heading"
       )}
     >
       {icon}
@@ -2981,14 +3774,15 @@ function LauncherSessionPanel({ nativeSessions, launchHistory, scanning, onDelet
   onRefresh: () => void;
   onResumeSession: (session: AISession) => void;
 }) {
+  const { t, tf } = useI18n();
   return (
     <section className="launcher-session-panel rounded-lg border border-border bg-bg">
       <div className="flex items-center justify-between border-b border-border px-4 py-3">
         <div>
-          <h3 className="text-sm font-bold text-heading">Sessions</h3>
-          <p className="mt-0.5 text-xs text-muted">{nativeSessions.length} native, {launchHistory.length} launches</p>
+          <h3 className="text-sm font-bold text-heading">{t("launcher.sessions")}</h3>
+          <p className="mt-0.5 text-xs text-muted">{nativeSessions.length} {tf("launcher.nativeLaunches", { count: launchHistory.length })}</p>
         </div>
-        <IconAction title="Refresh sessions" icon={<RefreshCw size={14} className={scanning ? "animate-spin" : undefined} />} onClick={onRefresh} />
+        <IconAction title={t("launcher.refreshSessions")} icon={<RefreshCw size={14} className={scanning ? "animate-spin" : undefined} />} onClick={onRefresh} />
       </div>
       <div className="launcher-session-list grid gap-1 p-2">
         {nativeSessions.map((session) => (
@@ -2997,16 +3791,16 @@ function LauncherSessionPanel({ nativeSessions, launchHistory, scanning, onDelet
               {toolIcon(session.tool, 14)}
             </span>
             <div className="min-w-0 flex-1">
-              <p className="truncate text-sm font-bold text-heading">{session.tool} session</p>
-              <p className="truncate text-xs text-muted">{formatRelativeTime(session.updated_at_ms)} · {session.id.slice(0, 8)} · {session.message_count} msgs</p>
-              <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-label">{session.preview || "No preview available."}</p>
+              <p className="truncate text-sm font-bold text-heading">{tf("launcher.nativeSessionTitle", { tool: session.tool })}</p>
+              <p className="truncate text-xs text-muted">{formatRelativeTime(session.updated_at_ms, t, tf)} · {session.id.slice(0, 8)} · {tf("launcher.messageCount", { count: session.message_count })}</p>
+              <p className="mt-0.5 line-clamp-2 text-[11px] leading-relaxed text-label">{session.preview || t("launcher.noPreview")}</p>
             </div>
-            <IconAction title="Resume native session" icon={<RotateCw size={13} />} onClick={() => onResumeSession(session)} />
-            <IconAction title="Delete session file" danger icon={<Trash2 size={13} />} onClick={() => onDeleteNativeSession(session)} />
+            <IconAction title={t("launcher.resumeSession")} icon={<RotateCw size={13} />} onClick={() => onResumeSession(session)} />
+            <IconAction title={t("launcher.deleteSession")} danger icon={<Trash2 size={13} />} onClick={() => onDeleteNativeSession(session)} />
           </div>
         ))}
         {nativeSessions.length === 0 ? (
-          <div className="px-3 py-5 text-center text-sm text-muted">{scanning ? "Scanning sessions..." : "No native sessions for this project."}</div>
+          <div className="px-3 py-5 text-center text-sm text-muted">{scanning ? t("launcher.scanningSessions") : t("launcher.noNativeSessions")}</div>
         ) : null}
         {launchHistory.map((item) => (
           <div key={item.id} className="flex items-center gap-2 rounded-lg px-2 py-2 hover:bg-surface">
@@ -3015,10 +3809,10 @@ function LauncherSessionPanel({ nativeSessions, launchHistory, scanning, onDelet
             </span>
             <div className="min-w-0 flex-1">
               <p className="truncate text-sm font-bold text-heading">{item.tool} / {item.launchType === "vscode" ? "VS Code" : "CLI"}</p>
-              <p className="truncate text-xs text-muted">{item.providerName} · {formatRelativeTime(item.lastUsed)}</p>
+              <p className="truncate text-xs text-muted">{item.providerName} · {formatRelativeTime(item.lastUsed, t, tf)}</p>
             </div>
-            <IconAction title="Launch this target" icon={<Play size={13} />} onClick={() => onLaunchRecent(item)} />
-            <IconAction title="Remove" danger icon={<Trash2 size={13} />} onClick={() => onDeleteLaunch(item.id)} />
+            <IconAction title={t("launcher.launchTarget")} icon={<Play size={13} />} onClick={() => onLaunchRecent(item)} />
+            <IconAction title={t("launcher.removeLaunch")} danger icon={<Trash2 size={13} />} onClick={() => onDeleteLaunch(item.id)} />
           </div>
         ))}
       </div>
@@ -3046,6 +3840,7 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
   onDeleteDirectory: (path: string) => void;
   emptyText?: string;
 }) {
+  const { t, tf } = useI18n();
   const [openMenuPath, setOpenMenuPath] = useState<string | null>(null);
   return (
     <section className="border-b border-border last:border-b-0">
@@ -3092,29 +3887,44 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
                   {workspace.defaultProviderName ? (
                     <span className={cn("launcher-gateway-chip", providerReady ? "is-ready" : "is-missing")}>{workspace.defaultProviderName}</span>
                   ) : null}
-                  {nativeCount ? <span className="rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-bold text-success">{nativeCount} session{nativeCount === 1 ? "" : "s"}</span> : null}
+                  {nativeCount ? <span className="rounded-full bg-success-soft px-2 py-0.5 text-[11px] font-bold text-success">{nativeCount} {t("launcher.sessions")}</span> : null}
                 </span>
               </span>
               <span className="relative flex items-center gap-1">
-                <span className="hidden text-[11px] font-semibold text-muted xl:inline">{formatRelativeTime(workspace.lastUsed)}</span>
-                <ProjectSelect
-                  title="Project gateway"
-                  placeholder="Gateway"
+                <span className="hidden text-[11px] font-semibold text-muted xl:inline">{formatRelativeTime(workspace.lastUsed, t, tf)}</span>
+                <select
+                  className="launcher-gateway-select"
                   value={providerReady ? workspace.defaultProviderName : ""}
-                  options={providers.map((provider) => ({ value: provider.name, label: provider.name }))}
-                  disabled={!providers.length}
-                  onChange={(value) => onSetGateway(workspace.path, value)}
-                />
-                <ProjectSelect
-                  title="Project reasoning"
-                  placeholder="Reasoning"
+                  title={t("launcher.projectGateway")}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onSetGateway(workspace.path, event.currentTarget.value);
+                  }}
+                >
+                  <option value="" disabled>{t("common.gateway")}</option>
+                  {providers.map((provider) => (
+                    <option key={provider.name} value={provider.name}>{provider.name}</option>
+                  ))}
+                </select>
+                <select
+                  className="launcher-gateway-select"
                   value={workspace.defaultReasoningEffort ?? ""}
-                  options={REASONING_OPTIONS.map((effort) => ({ value: effort, label: effort || "Reasoning" }))}
-                  onChange={(value) => onSetReasoning(workspace.path, value)}
-                />
-                <IconAction title="Open project" icon={<Play size={13} />} onClick={(event) => { event.stopPropagation(); onLaunch(workspace); }} />
+                  title={t("launcher.projectReasoning")}
+                  onClick={(event) => event.stopPropagation()}
+                  onChange={(event) => {
+                    event.stopPropagation();
+                    onSetReasoning(workspace.path, event.currentTarget.value);
+                  }}
+                >
+                  <option value="">{t("launcher.reasoning")}</option>
+                  {REASONING_OPTIONS.filter(Boolean).map((effort) => (
+                    <option key={effort} value={effort}>{effort}</option>
+                  ))}
+                </select>
+                <IconAction title={t("launcher.openProject")} icon={<Play size={13} />} onClick={(event) => { event.stopPropagation(); onLaunch(workspace); }} />
                 <IconAction
-                  title="Project actions"
+                  title={t("launcher.projectActions")}
                   icon={<MoreVertical size={14} />}
                   onClick={(event) => {
                     event.stopPropagation();
@@ -3123,15 +3933,15 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
                 />
                 {openMenuPath === workspace.path ? (
                   <div className="launcher-project-menu" onClick={(event) => event.stopPropagation()}>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunch(workspace); }}><Play size={13} /> Open project</button>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchCodex(workspace); }}><Terminal size={13} /> Open in Codex</button>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchClaude(workspace); }}><Zap size={13} /> Open in Claude</button>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchOpenCode(workspace); }}><Code2 size={13} /> Open in OpenCode</button>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchVscode(workspace); }}><Code2 size={13} /> Open in VS Code</button>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onReveal(workspace.path); }}><FolderOpen size={13} /> Show in Explorer</button>
-                    <button type="button" onClick={() => { setOpenMenuPath(null); onTogglePin(workspace.path); }}><Star size={13} fill={workspace.pinned ? "currentColor" : "none"} /> {workspace.pinned ? "Unpin" : "Pin"}</button>
-                    <button type="button" className="danger" onClick={() => { setOpenMenuPath(null); onDelete(workspace.path); }}><Trash2 size={13} /> Remove from launcher</button>
-                    <button type="button" className="danger" onClick={() => { setOpenMenuPath(null); onDeleteDirectory(workspace.path); }}><Trash2 size={13} /> Delete directory</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunch(workspace); }}><Play size={13} /> {t("launcher.openProject")}</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchCodex(workspace); }}><Terminal size={13} /> {t("launcher.openInCodex")}</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchClaude(workspace); }}><Zap size={13} /> {t("launcher.openInClaude")}</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchOpenCode(workspace); }}><Code2 size={13} /> {t("launcher.openInOpenCode")}</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onLaunchVscode(workspace); }}><Code2 size={13} /> {t("launcher.openInVscode")}</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onReveal(workspace.path); }}><FolderOpen size={13} /> {t("launcher.showInExplorer")}</button>
+                    <button type="button" onClick={() => { setOpenMenuPath(null); onTogglePin(workspace.path); }}><Star size={13} fill={workspace.pinned ? "currentColor" : "none"} /> {workspace.pinned ? t("launcher.unpin") : t("launcher.pin")}</button>
+                    <button type="button" className="danger" onClick={() => { setOpenMenuPath(null); onDelete(workspace.path); }}><Trash2 size={13} /> {t("launcher.remove")}</button>
+                    <button type="button" className="danger" onClick={() => { setOpenMenuPath(null); onDeleteDirectory(workspace.path); }}><Trash2 size={13} /> {t("launcher.deleteDirectory")}</button>
                   </div>
                 ) : null}
               </span>
@@ -3140,111 +3950,15 @@ function LauncherWorkspaceSection({ title, workspaces, selectedPath, nativeSessi
           })}
         </div>
       ) : (
-        <div className="px-5 pb-5 text-sm text-muted">{emptyText ?? "No workspaces."}</div>
+        <div className="px-5 pb-5 text-sm text-muted">{emptyText ?? t("launcher.noWorkspaces")}</div>
       )}
     </section>
   );
 }
 
-function ProjectSelect({ title, placeholder, value, options, disabled, onChange }: {
-  title: string;
-  placeholder: string;
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  disabled?: boolean;
-  onChange: (value: string) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const selected = options.find((option) => option.value === value);
-  const display = selected?.label || placeholder;
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: PointerEvent) => {
-      const target = event.target as Node | null;
-      if (target && (buttonRef.current?.contains(target) || menuRef.current?.contains(target))) return;
-      setOpen(false);
-    };
-    window.addEventListener("pointerdown", close);
-    return () => window.removeEventListener("pointerdown", close);
-  }, [open]);
-
-  return (
-    <span className="project-select" onClick={(event) => event.stopPropagation()}>
-      <button
-        ref={buttonRef}
-        type="button"
-        title={title}
-        aria-label={title}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        disabled={disabled}
-        className={cn("project-select-trigger", open && "is-open", !selected && "is-placeholder")}
-        onClick={() => setOpen((value) => !value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
-          if (event.key === "ArrowDown" || event.key === "Enter" || event.key === " ") {
-            event.preventDefault();
-            setOpen(true);
-          }
-        }}
-      >
-        <span>{display}</span>
-        <ChevronDown size={14} className={cn("project-select-chevron", open && "is-open")} />
-      </button>
-
-      {open ? (
-        <div ref={menuRef} className="project-select-menu" role="listbox" aria-label={title}>
-          {options.map((option) => {
-            const selectedOption = option.value === value;
-            return (
-              <button
-                key={option.value || "__empty"}
-                type="button"
-                role="option"
-                aria-selected={selectedOption}
-                className={cn("project-select-option", selectedOption && "is-selected", !option.value && "is-placeholder")}
-                onClick={() => {
-                  onChange(option.value);
-                  setOpen(false);
-                }}
-              >
-                <span>{option.label}</span>
-                {selectedOption ? <CheckCircle2 size={13} /> : null}
-              </button>
-            );
-          })}
-        </div>
-      ) : null}
-    </span>
-  );
-}
-
-function DashboardView({
-  snapshot,
-  status,
-  providerCount,
-  routeCount,
-  activeProviderName,
-  listenAddress,
-  latestSample,
-  dashboard,
-  logs,
-  onRefresh,
-  onOpenProviders,
-  onOpenLauncher,
-  onStartGateway,
-  refreshing,
-  actionBusy,
-}: {
+function DashboardView({ snapshot, status, latestSample, dashboard, logs, onRefresh, refreshing }: {
   snapshot: ServerSnapshot | null;
   status: ProcessStatus | null;
-  providerCount: number;
-  routeCount: number;
-  activeProviderName?: string;
-  listenAddress: string;
   latestSample: MetricSample | undefined;
   dashboard: {
     requests: number;
@@ -3259,12 +3973,9 @@ function DashboardView({
   };
   logs: LogEntry[];
   onRefresh: () => void;
-  onOpenProviders: () => void;
-  onOpenLauncher: () => void;
-  onStartGateway: () => void;
   refreshing: boolean;
-  actionBusy: boolean;
 }) {
+  const { t, tf } = useI18n();
   const promptTokens = latestSample?.values.ferryllm_upstream_prompt_tokens_total ?? 0;
   const cachedTokens = latestSample?.values.ferryllm_prompt_cached_tokens_total ?? 0;
   const cachePromptTokens = latestSample?.values.ferryllm_cache_prompt_tokens_total ?? 0;
@@ -3280,17 +3991,6 @@ function DashboardView({
   })();
   const recentLogs = logs.slice(-10).reverse();
   const hasDashboardData = dashboard.requests > 0 || modelRows.length > 0 || promptTokens > 0 || recentLogs.length > 0;
-  const gatewayRunning = !!status?.running;
-  const httpBase = listenAddress.startsWith("http") ? listenAddress : `http://${listenAddress}`;
-  const nextAction = !providerCount
-    ? { label: "Add provider", icon: <Network size={15} />, onClick: onOpenProviders, primary: true, disabled: false }
-    : !routeCount
-      ? { label: "Edit routes", icon: <Route size={15} />, onClick: onOpenProviders, primary: true, disabled: false }
-      : !gatewayRunning
-        ? { label: "Start gateway", icon: <Play size={15} />, onClick: onStartGateway, primary: true, disabled: actionBusy }
-        : dashboard.requests === 0
-          ? { label: "Open Launch", icon: <FolderOpen size={15} />, onClick: onOpenLauncher, primary: true, disabled: false }
-          : { label: "Refresh", icon: <RefreshCw size={15} />, onClick: onRefresh, primary: false, disabled: refreshing };
 
   return (
     <motion.div
@@ -3303,70 +4003,45 @@ function DashboardView({
     >
       <section className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-heading">Gateway</h1>
-          <p className="mt-1 text-sm text-muted">Local routing for Codex, Claude Code, OpenCode, and API clients.</p>
+          <h1 className="text-xl font-bold text-heading">{t("dashboard.title")}</h1>
+          <p className="mt-1 text-sm text-muted">
+            {snapshot ? tf("dashboard.lastRefresh", { time: new Date(snapshot.fetched_at_ms).toLocaleTimeString() }) : t("dashboard.waitingSample")}
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <ProbeBadge label={gatewayStatusLabel(status)} ok={!!status?.running} />
-          <ProbeBadge label="Health" ok={snapshot ? !!snapshot.health.ok : null} detail={snapshot?.health.status ? String(snapshot.health.status) : undefined} />
-          <ProbeBadge label="Ready" ok={snapshot ? !!snapshot.ready.ok : null} detail={snapshot?.ready.status ? String(snapshot.ready.status) : undefined} />
+          <ProbeBadge label={t(gatewayStatusLabelKey(status))} ok={!!status?.running} />
+          <ProbeBadge label={t("common.health")} ok={snapshot ? !!snapshot.health.ok : null} detail={snapshot?.health.status ? String(snapshot.health.status) : undefined} />
+          <ProbeBadge label={t("common.ready")} ok={snapshot ? !!snapshot.ready.ok : null} detail={snapshot?.ready.status ? String(snapshot.ready.status) : undefined} />
           <button
             type="button"
             onClick={onRefresh}
             disabled={refreshing}
             className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-surface px-3 text-sm font-semibold text-muted hover:text-heading disabled:opacity-50"
           >
-            <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} /> Refresh
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : undefined} /> {t("common.refresh")}
           </button>
         </div>
       </section>
 
-      <section className="gateway-summary-bar">
-        <div className="gateway-summary-item">
-          <span>Endpoint</span>
-          <code>{httpBase}</code>
-        </div>
-        <div className="gateway-summary-item">
-          <span>Providers</span>
-          <strong>{providerCount}</strong>
-        </div>
-        <div className="gateway-summary-item">
-          <span>Routes</span>
-          <strong>{routeCount}</strong>
-        </div>
-        <div className="gateway-summary-item">
-          <span>Selected</span>
-          <strong>{activeProviderName || "None"}</strong>
-        </div>
-        <Button
-          variant={nextAction.primary ? "primary" : undefined}
-          icon={nextAction.icon}
-          onClick={nextAction.onClick}
-          disabled={nextAction.disabled}
-        >
-          {nextAction.label}
-        </Button>
-      </section>
-
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-6">
-        <StatCard icon={<Activity size={16} />} label="Requests" value={fmtInt(dashboard.requests)} />
-        <StatCard icon={<CheckCircle2 size={16} />} label="Success" value={fmtPct(dashboard.successRate)} tone="success" />
-        <StatCard icon={<AlertTriangle size={16} />} label="Errors" value={fmtInt(dashboard.errors)} tone={dashboard.errors ? "danger" : undefined} />
-        <StatCard icon={<Network size={16} />} label="Upstream" value={fmtInt(dashboard.upstreamErrors)} tone={dashboard.upstreamErrors ? "danger" : undefined} />
-        <StatCard icon={<Gauge size={16} />} label="Avg latency" value={fmtLatency(dashboard.avgLatency)} />
-        <StatCard icon={<Database size={16} />} label="Cache hit" value={fmtPct(dashboard.cacheHit)} tone={dashboard.cacheHit > 0 ? "success" : undefined} />
+        <StatCard icon={<Activity size={16} />} label={t("dashboard.requests")} value={fmtInt(dashboard.requests)} />
+        <StatCard icon={<CheckCircle2 size={16} />} label={t("dashboard.success")} value={fmtPct(dashboard.successRate)} tone="success" />
+        <StatCard icon={<AlertTriangle size={16} />} label={t("dashboard.errors")} value={fmtInt(dashboard.errors)} tone={dashboard.errors ? "danger" : undefined} />
+        <StatCard icon={<Network size={16} />} label={t("dashboard.upstream")} value={fmtInt(dashboard.upstreamErrors)} tone={dashboard.upstreamErrors ? "danger" : undefined} />
+        <StatCard icon={<Gauge size={16} />} label={t("dashboard.avgLatency")} value={fmtLatency(dashboard.avgLatency)} />
+        <StatCard icon={<Database size={16} />} label={t("dashboard.cacheHit")} value={fmtPct(dashboard.cacheHit)} tone={dashboard.cacheHit > 0 ? "success" : undefined} />
       </section>
 
       <section className="grid gap-5 lg:grid-cols-[1.2fr_0.8fr]">
         <SparklineCard
-          title="Requests over time"
-          subtitle="Delta per dashboard sample"
+          title={t("dashboard.requestsOverTime")}
+          subtitle={t("dashboard.requestsOverTimeSubtitle")}
           points={dashboard.requestRatePoints}
           value={fmtInt(dashboard.requestRatePoints.length ? dashboard.requestRatePoints[dashboard.requestRatePoints.length - 1] : 0)}
         />
         <SparklineCard
-          title="Latency trend"
-          subtitle="Average latency per sample"
+          title={t("dashboard.latencyTrend")}
+          subtitle={t("dashboard.latencyTrendSubtitle")}
           points={dashboard.latencyPoints}
           value={fmtLatency(dashboard.latencyPoints.length ? dashboard.latencyPoints[dashboard.latencyPoints.length - 1] : 0)}
         />
@@ -3378,23 +4053,21 @@ function DashboardView({
           metricsOk={snapshot ? !!snapshot.metrics.ok : null}
           modelsOk={snapshot ? !!snapshot.models.ok : null}
           logs={recentLogs.length}
-          providerCount={providerCount}
-          routeCount={routeCount}
         />
       ) : (
       <>
       <section className="grid gap-5 lg:grid-cols-[1fr_0.85fr]">
         <div className="rounded-lg border border-border bg-surface">
-          <PanelHeader title="Provider / Model" subtitle={`${modelRows.length || modelCount} model entries tracked`} />
+          <PanelHeader title={t("dashboard.providerModel")} subtitle={tf("dashboard.modelsTracked", { count: modelRows.length || modelCount })} />
           <div className="overflow-auto">
             <table className="w-full min-w-[640px] border-collapse text-sm">
               <thead className="border-b border-border text-left text-xs uppercase text-muted">
                 <tr>
-                  <th className="px-4 py-3 font-semibold">Provider</th>
-                  <th className="px-4 py-3 font-semibold">Model</th>
-                  <th className="px-4 py-3 text-right font-semibold">Requests</th>
-                  <th className="px-4 py-3 text-right font-semibold">Errors</th>
-                  <th className="px-4 py-3 text-right font-semibold">Avg latency</th>
+                  <th className="px-4 py-3 font-semibold">{t("common.provider")}</th>
+                  <th className="px-4 py-3 font-semibold">{t("common.model")}</th>
+                  <th className="px-4 py-3 text-right font-semibold">{t("dashboard.requests")}</th>
+                  <th className="px-4 py-3 text-right font-semibold">{t("dashboard.errors")}</th>
+                  <th className="px-4 py-3 text-right font-semibold">{t("dashboard.avgLatency")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -3408,7 +4081,7 @@ function DashboardView({
                   </tr>
                 )) : (
                   <tr>
-                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted">No labeled model metrics yet.</td>
+                    <td colSpan={5} className="px-4 py-10 text-center text-sm text-muted">{t("dashboard.noModelMetrics")}</td>
                   </tr>
                 )}
               </tbody>
@@ -3418,20 +4091,20 @@ function DashboardView({
 
         <div className="grid gap-5">
           <div className="rounded-lg border border-border bg-surface">
-            <PanelHeader title="Prompt Cache" subtitle={`${fmtInt(promptTokens)} upstream prompt tokens`} />
+            <PanelHeader title={t("dashboard.promptCache")} subtitle={tf("dashboard.upstreamPromptTokens", { count: fmtInt(promptTokens) })} />
             <div className="space-y-4 p-5">
               <TokenBar cached={cachedTokens} uncached={uncachedTokens} />
               <div className="grid grid-cols-3 gap-3 text-sm">
                 <div>
-                  <p className="text-xs text-muted">Cached</p>
+                  <p className="text-xs text-muted">{t("dashboard.cached")}</p>
                   <strong className="text-heading">{fmtInt(cachedTokens)}</strong>
                 </div>
                 <div>
-                  <p className="text-xs text-muted">Uncached</p>
+                  <p className="text-xs text-muted">{t("dashboard.uncached")}</p>
                   <strong className="text-heading">{fmtInt(uncachedTokens)}</strong>
                 </div>
                 <div>
-                  <p className="text-xs text-muted">Hit ratio</p>
+                  <p className="text-xs text-muted">{t("dashboard.hitRatio")}</p>
                   <strong className="text-heading">{fmtPct(dashboard.cacheHit)}</strong>
                 </div>
               </div>
@@ -3439,7 +4112,7 @@ function DashboardView({
           </div>
 
           <div className="rounded-lg border border-border bg-surface">
-            <PanelHeader title="Recent Logs" subtitle={gatewayStatusDetail(status)} />
+            <PanelHeader title={t("dashboard.recentLogs")} subtitle={gatewayStatusDetailText(status, t)} />
             <div className="max-h-72 overflow-auto p-3">
               {recentLogs.length ? recentLogs.map((entry) => (
                 <div key={`${entry.ts_ms}-${entry.stream}-${entry.line}`} className="grid grid-cols-[76px_64px_1fr] gap-2 border-b border-border/60 py-2 text-xs last:border-0">
@@ -3451,7 +4124,7 @@ function DashboardView({
                   <span className="break-words font-mono text-fg">{entry.line}</span>
                 </div>
               )) : (
-                <div className="py-10 text-center text-sm text-muted">No logs yet.</div>
+                <div className="py-10 text-center text-sm text-muted">{t("dashboard.noLogs")}</div>
               )}
             </div>
           </div>
@@ -3464,6 +4137,7 @@ function DashboardView({
 }
 
 function UsageLogsView({ logs, launches, onBack }: { logs: LogEntry[]; launches: RecentLaunch[]; onBack: () => void }) {
+  const { t, tf } = useI18n();
   const rows = [
     ...logs.map((entry) => ({
       id: `log-${entry.ts_ms}-${entry.stream}-${entry.line}`,
@@ -3496,34 +4170,34 @@ function UsageLogsView({ logs, launches, onBack }: { logs: LogEntry[]; launches:
     >
       <section className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border bg-surface px-5 py-4">
         <div className="flex items-start gap-3">
-          <Button icon={<ChevronDown size={14} className="rotate-90" />} onClick={onBack}>Back</Button>
+          <Button icon={<ChevronDown size={14} className="rotate-90" />} onClick={onBack}>{t("common.back")}</Button>
           <div>
-            <p className="text-xs font-bold uppercase text-muted">Gateway activity</p>
-            <h1 className="mt-1 text-xl font-bold text-heading">Usage Logs</h1>
-            <p className="mt-1 text-sm text-muted">{rows.length} recent events from runtime logs and launcher history.</p>
+            <p className="text-xs font-bold uppercase text-muted">{t("usage.activity")}</p>
+            <h1 className="mt-1 text-xl font-bold text-heading">{t("usage.title")}</h1>
+            <p className="mt-1 text-sm text-muted">{tf("usage.subtitle", { count: rows.length })}</p>
           </div>
         </div>
       </section>
 
       <section className="grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard icon={<History size={16} />} label="Events" value={fmtInt(rows.length)} />
-        <StatCard icon={<Terminal size={16} />} label="Runtime logs" value={fmtInt(logs.length)} />
-        <StatCard icon={<FolderOpen size={16} />} label="Launches" value={fmtInt(launches.length)} />
-        <StatCard icon={<AlertTriangle size={16} />} label="Errors" value={fmtInt(rows.filter((row) => row.status === "error").length)} tone={rows.some((row) => row.status === "error") ? "danger" : undefined} />
+        <StatCard icon={<History size={16} />} label={t("usage.events")} value={fmtInt(rows.length)} />
+        <StatCard icon={<Terminal size={16} />} label={t("usage.runtimeLogs")} value={fmtInt(logs.length)} />
+        <StatCard icon={<FolderOpen size={16} />} label={t("usage.launches")} value={fmtInt(launches.length)} />
+        <StatCard icon={<AlertTriangle size={16} />} label={t("dashboard.errors")} value={fmtInt(rows.filter((row) => row.status === "error").length)} tone={rows.some((row) => row.status === "error") ? "danger" : undefined} />
       </section>
 
       <section className="rounded-lg border border-border bg-surface">
-        <PanelHeader title="Recent Activity" subtitle="Local gateway and launcher events" />
+        <PanelHeader title={t("usage.recentActivity")} subtitle={t("usage.recentActivitySubtitle")} />
         <div className="overflow-auto">
           <table className="w-full min-w-[860px] border-collapse text-sm">
             <thead className="border-b border-border text-left text-xs uppercase text-muted">
               <tr>
-                <th className="px-4 py-3 font-semibold">Time</th>
-                <th className="px-4 py-3 font-semibold">Type</th>
-                <th className="px-4 py-3 font-semibold">Provider</th>
-                <th className="px-4 py-3 font-semibold">Model / Tool</th>
-                <th className="px-4 py-3 font-semibold">Status</th>
-                <th className="px-4 py-3 font-semibold">Detail</th>
+                <th className="px-4 py-3 font-semibold">{t("common.time")}</th>
+                <th className="px-4 py-3 font-semibold">{t("common.type")}</th>
+                <th className="px-4 py-3 font-semibold">{t("common.provider")}</th>
+                <th className="px-4 py-3 font-semibold">{t("usage.modelTool")}</th>
+                <th className="px-4 py-3 font-semibold">{t("common.status")}</th>
+                <th className="px-4 py-3 font-semibold">{t("common.detail")}</th>
               </tr>
             </thead>
             <tbody>
@@ -3538,7 +4212,7 @@ function UsageLogsView({ logs, launches, onBack }: { logs: LogEntry[]; launches:
                 </tr>
               )) : (
                 <tr>
-                  <td colSpan={6} className="px-4 py-16 text-center text-sm text-muted">No usage events yet.</td>
+                  <td colSpan={6} className="px-4 py-16 text-center text-sm text-muted">{t("usage.noEvents")}</td>
                 </tr>
               )}
             </tbody>
@@ -3549,38 +4223,26 @@ function UsageLogsView({ logs, launches, onBack }: { logs: LogEntry[]; launches:
   );
 }
 
-function DashboardEmptyState({ running, metricsOk, modelsOk, logs, providerCount, routeCount }: {
-  running: boolean;
-  metricsOk: boolean | null;
-  modelsOk: boolean | null;
-  logs: number;
-  providerCount: number;
-  routeCount: number;
-}) {
+function DashboardEmptyState({ running, metricsOk, modelsOk, logs }: { running: boolean; metricsOk: boolean | null; modelsOk: boolean | null; logs: number }) {
+  const { t } = useI18n();
   const rows = [
-    { icon: <Network size={15} />, label: "Providers", value: providerCount ? `${providerCount} configured` : "None yet", ok: providerCount > 0 },
-    { icon: <Route size={15} />, label: "Routes", value: routeCount ? `${routeCount} model routes` : "No routes", ok: routeCount > 0 },
-    { icon: <Terminal size={15} />, label: "Runtime", value: running ? "Running" : "Stopped", ok: running },
-    { icon: <BarChart3 size={15} />, label: "Metrics", value: metricsOk == null ? "Waiting" : metricsOk ? "Reachable" : "Unavailable", ok: metricsOk },
-    { icon: <Database size={15} />, label: "Models", value: modelsOk == null ? "Waiting" : modelsOk ? "Reachable" : "Unavailable", ok: modelsOk },
-    { icon: <History size={15} />, label: "Logs", value: logs ? `${logs} recent` : "No logs yet", ok: logs > 0 ? true : null },
+    { icon: <Terminal size={15} />, label: t("dashboard.runtime"), value: running ? t("common.running") : t("common.stopped"), ok: running },
+    { icon: <BarChart3 size={15} />, label: t("dashboard.metrics"), value: metricsOk == null ? t("dashboard.waiting") : metricsOk ? t("dashboard.reachable") : t("dashboard.unavailable"), ok: metricsOk },
+    { icon: <Database size={15} />, label: t("dashboard.models"), value: modelsOk == null ? t("dashboard.waiting") : modelsOk ? t("dashboard.reachable") : t("dashboard.unavailable"), ok: modelsOk },
+    { icon: <History size={15} />, label: t("dashboard.logs"), value: logs ? `${logs} recent` : t("dashboard.noLogs"), ok: logs > 0 ? true : null },
   ];
   return (
     <section className="rounded-lg border border-border bg-surface p-6">
       <div className="mx-auto max-w-3xl text-center">
-        <Route size={28} className="mx-auto text-icon" />
-        <h2 className="mt-3 text-base font-bold text-heading">
-          {!providerCount ? "Connect a provider to make the gateway useful" : running ? "Waiting for the first routed request" : "Gateway is ready to start"}
-        </h2>
+        <Activity size={28} className="mx-auto text-icon" />
+        <h2 className="mt-3 text-base font-bold text-heading">{running ? t("dashboard.waitingTraffic") : t("dashboard.runtimeStopped")}</h2>
         <p className="mt-1 text-sm text-muted">
-          {!providerCount
-            ? "Add an upstream provider, create a model route, then launch a coding tool through the local ferryllm endpoint."
-            : running
-              ? "Metrics, cache data, provider rows, and logs will appear once a client sends traffic through ferryllm."
-              : "Start ferryllm after saving your provider routes, then launch Codex, Claude Code, or OpenCode from the Launch workbench."}
+          {running
+            ? t("dashboard.emptyRunning")
+            : t("dashboard.emptyStopped")}
         </p>
       </div>
-      <div className="mt-5 grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+      <div className="mt-5 grid gap-2 md:grid-cols-4">
         {rows.map((row) => (
           <div key={row.label} className="flex items-center gap-3 rounded-lg border border-border bg-bg px-3 py-2.5">
             <span className={cn(
@@ -3617,7 +4279,7 @@ function ProbeBadge({ label, ok, detail }: { label: string; ok: boolean | null; 
 
 function StatCard({ icon, label, value, tone }: { icon: ReactNode; label: string; value: string; tone?: "success" | "danger" }) {
   return (
-    <div className="rounded-lg border border-border bg-surface p-4">
+    <div className="control-card p-4">
       <div className={cn(
         "mb-3 inline-grid h-8 w-8 place-items-center rounded-lg bg-muted-soft text-icon",
         tone === "success" && "bg-success-soft text-success",
@@ -3635,7 +4297,7 @@ function SparklineCard({ title, subtitle, points, value }: { title: string; subt
   const path = sparklinePath(points);
   const area = sparklineAreaPath(points);
   return (
-    <div className="rounded-lg border border-border bg-surface p-5">
+    <div className="control-card p-5">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div>
           <h2 className="text-sm font-bold text-heading">{title}</h2>
@@ -3665,6 +4327,7 @@ function SparklineCard({ title, subtitle, points, value }: { title: string; subt
 }
 
 function TokenBar({ cached, uncached }: { cached: number; uncached: number }) {
+  const { t } = useI18n();
   const total = cached + uncached;
   const cachedPct = total > 0 ? (cached / total) * 100 : 0;
   return (
@@ -3678,8 +4341,8 @@ function TokenBar({ cached, uncached }: { cached: number; uncached: number }) {
         ) : null}
       </div>
       <div className="mt-2 flex items-center justify-between text-xs text-muted">
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-success" /> cached</span>
-        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-primary" /> uncached</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-success" /> {t("dashboard.cached")}</span>
+        <span className="inline-flex items-center gap-1.5"><span className="h-2 w-2 rounded-full bg-primary" /> {t("dashboard.uncached")}</span>
       </div>
     </div>
   );
@@ -3812,7 +4475,7 @@ function SettingsInfoRow({ icon, label, value, tone = "default" }: {
   tone?: "default" | "success" | "warning" | "muted";
 }) {
   return (
-    <div className="flex min-h-12 items-center gap-3 rounded-lg border border-border bg-bg px-3 py-2">
+    <div className="flex min-h-12 items-center gap-3 rounded-lg border border-border bg-bg/70 px-3 py-2">
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-muted-soft text-icon">{icon}</span>
       <div className="min-w-0 flex-1">
         <p className="text-xs font-semibold uppercase text-muted">{label}</p>
@@ -3833,9 +4496,10 @@ function SettingsInfoRow({ icon, label, value, tone = "default" }: {
 function SettingsFeatureRow({ icon, title, status, detail }: {
   icon: ReactNode;
   title: string;
-  status: "Partial" | "Planned";
+  status: string;
   detail?: string;
 }) {
+  const partial = status === "Partial" || status === i18n["zh-CN"]["common.partial"];
   return (
     <div className="flex items-center gap-3 rounded-lg border border-border bg-bg px-3 py-3">
       <span className="grid h-8 w-8 shrink-0 place-items-center rounded-lg bg-muted-soft text-icon">{icon}</span>
@@ -3845,7 +4509,7 @@ function SettingsFeatureRow({ icon, title, status, detail }: {
       </div>
       <span className={cn(
         "shrink-0 rounded-full px-2 py-0.5 text-[11px] font-bold",
-        status === "Partial" ? "bg-info-soft text-primary" : "bg-muted-soft text-muted"
+        partial ? "bg-info-soft text-primary" : "bg-muted-soft text-muted"
       )}>
         {status}
       </span>
@@ -3860,7 +4524,7 @@ function SettingsSummaryCard({ icon, label, value, tone = "default" }: {
   tone?: "default" | "success" | "muted";
 }) {
   return (
-    <div className="rounded-lg border border-border bg-surface p-4">
+    <div className="control-card p-4">
       <div className="flex items-center justify-between">
         <span className="grid h-9 w-9 place-items-center rounded-lg bg-muted-soft text-icon">{icon}</span>
         <span className={cn(
@@ -3883,6 +4547,7 @@ function TextField({ label, value, onChange, secret }: {
   onChange: (v: string) => void;
   secret?: boolean;
 }) {
+  const { t } = useI18n();
   const [revealed, setRevealed] = useState(false);
   const input = (
     <input
@@ -3903,8 +4568,8 @@ function TextField({ label, value, onChange, secret }: {
           {input}
           <button
             type="button"
-            title={revealed ? "Hide API key" : "Show API key"}
-            aria-label={revealed ? "Hide API key" : "Show API key"}
+            title={revealed ? t("common.hideApiKey") : t("common.showApiKey")}
+            aria-label={revealed ? t("common.hideApiKey") : t("common.showApiKey")}
             className="absolute right-2 top-1/2 grid h-7 w-7 -translate-y-1/2 place-items-center rounded-md text-icon hover:bg-muted-soft hover:text-icon-hover"
             onClick={() => setRevealed((v) => !v)}
           >
@@ -3917,13 +4582,14 @@ function TextField({ label, value, onChange, secret }: {
 }
 
 function NumberField({ label, value, optional, onChange }: { label: string; value: string; optional?: boolean; onChange: (v: number | undefined) => void }) {
+  const { t } = useI18n();
   return (
     <label>
       <span>{label}</span>
       <input
         type="number"
         value={value}
-        placeholder={optional ? "off" : undefined}
+        placeholder={optional ? t("common.off") : undefined}
         onChange={(e) => {
           const raw = e.currentTarget.value;
           onChange(raw === "" ? undefined : Number(raw));
