@@ -299,16 +299,16 @@ mod tests {
     fn test_success_resets_failure_count() {
         let registry = HealthRegistry::with_defaults();
 
-        // Record failures
-        for _ in 0..4 {
+        // Record failures - need 5 to trigger cooldown with default threshold
+        for _ in 0..5 {
             registry.record_failure("test");
         }
         assert!(!registry.can_serve("test"));
 
         // Record success - should reduce failure count
         registry.record_success("test", 100.0);
-        // With default config (threshold 5), failure count goes to 3
-        // Still not serving, but closer to recovery
+        // Failure count goes to 4, still above threshold, still not serving
+        assert!(!registry.can_serve("test"));
     }
 
     #[test]
