@@ -110,17 +110,14 @@ impl HealthRegistry {
     /// Get full health information for a target.
     pub fn get_health(&self, target: &str) -> TargetHealth {
         let targets = self.targets.read();
-        targets
-            .get(target)
-            .cloned()
-            .unwrap_or(TargetHealth {
-                status: HealthStatus::Healthy,
-                failure_count: 0,
-                last_failure: None,
-                last_success: None,
-                cooldown_until: None,
-                latency_ms: 0.0,
-            })
+        targets.get(target).cloned().unwrap_or(TargetHealth {
+            status: HealthStatus::Healthy,
+            failure_count: 0,
+            last_failure: None,
+            last_success: None,
+            cooldown_until: None,
+            latency_ms: 0.0,
+        })
     }
 
     /// Record a successful request.
