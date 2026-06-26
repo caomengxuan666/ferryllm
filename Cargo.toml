@@ -1,8 +1,8 @@
 [package]
 name = "ferryllm"
-version = "0.3.2"
+version = "0.4.0"
 edition = "2021"
-description = "Universal LLM protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI-compatible backends."
+description = "Desktop-first LLM gateway with N+M architecture. Universal protocol middleware for OpenAI, Anthropic, Claude Code, and OpenAI-compatible backends."
 license = "MIT"
 repository = "https://github.com/caomengxuan666/ferryllm"
 homepage = "https://github.com/caomengxuan666/ferryllm"
@@ -27,6 +27,9 @@ async-trait = "0.1"
 thiserror = "2"
 toml = "0.9"
 tiktoken-rs = { version = "0.11", optional = true }
+http = "1"
+parking_lot = "0.12"
+rand = "0.8"
 
 [features]
 default = ["http", "prompt-observability", "openai-responses"]
@@ -34,3 +37,5 @@ http = []
 prompt-observability = ["dep:tiktoken-rs"]
 openai-responses = []
 gemini = []
+# Gateway features
+gateway = []
