@@ -180,7 +180,8 @@ impl CircuitBreaker {
 
     /// Transition to closed state.
     fn to_closed(&self) {
-        self.state.store(CircuitState::Closed as u8, Ordering::SeqCst);
+        self.state
+            .store(CircuitState::Closed as u8, Ordering::SeqCst);
         self.failure_count.store(0, Ordering::SeqCst);
         self.success_count.store(0, Ordering::SeqCst);
         self.half_open_count.store(0, Ordering::SeqCst);
@@ -195,7 +196,8 @@ impl CircuitBreaker {
 
     /// Transition to half-open state.
     fn to_half_open(&self) {
-        self.state.store(CircuitState::HalfOpen as u8, Ordering::SeqCst);
+        self.state
+            .store(CircuitState::HalfOpen as u8, Ordering::SeqCst);
         self.success_count.store(0, Ordering::SeqCst);
         self.half_open_count.store(0, Ordering::SeqCst);
         *self.last_state_change.write() = Instant::now();

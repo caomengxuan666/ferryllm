@@ -111,27 +111,32 @@ impl HealthRegistry {
     /// Get full health information for a target.
     pub fn get_health(&self, target: &str) -> TargetHealth {
         let targets = self.targets.read();
-        targets.get(target).cloned().unwrap_or_else(|| TargetHealth {
-            status: HealthStatus::Healthy,
-            failure_count: 0,
-            last_failure: None,
-            last_success: None,
-            cooldown_until: None,
-            latency_ms: 0.0,
-        })
+        targets
+            .get(target)
+            .cloned()
+            .unwrap_or_else(|| TargetHealth {
+                status: HealthStatus::Healthy,
+                failure_count: 0,
+                last_failure: None,
+                last_success: None,
+                cooldown_until: None,
+                latency_ms: 0.0,
+            })
     }
 
     /// Record a successful request.
     pub fn record_success(&self, target: &str, latency_ms: f64) {
         let mut targets = self.targets.write();
-        let health = targets.entry(target.to_string()).or_insert_with(|| TargetHealth {
-            status: HealthStatus::Healthy,
-            failure_count: 0,
-            last_failure: None,
-            last_success: None,
-            cooldown_until: None,
-            latency_ms: 0.0,
-        });
+        let health = targets
+            .entry(target.to_string())
+            .or_insert_with(|| TargetHealth {
+                status: HealthStatus::Healthy,
+                failure_count: 0,
+                last_failure: None,
+                last_success: None,
+                cooldown_until: None,
+                latency_ms: 0.0,
+            });
 
         // Update latency with EWMA (exponentially weighted moving average)
         const EWMA_ALPHA: f64 = 0.2;
@@ -156,14 +161,16 @@ impl HealthRegistry {
     /// Record a failed request.
     pub fn record_failure(&self, target: &str) {
         let mut targets = self.targets.write();
-        let health = targets.entry(target.to_string()).or_insert_with(|| TargetHealth {
-            status: HealthStatus::Healthy,
-            failure_count: 0,
-            last_failure: None,
-            last_success: None,
-            cooldown_until: None,
-            latency_ms: 0.0,
-        });
+        let health = targets
+            .entry(target.to_string())
+            .or_insert_with(|| TargetHealth {
+                status: HealthStatus::Healthy,
+                failure_count: 0,
+                last_failure: None,
+                last_success: None,
+                cooldown_until: None,
+                latency_ms: 0.0,
+            });
 
         health.failure_count += 1;
         health.last_failure = Some(Instant::now());
@@ -181,14 +188,16 @@ impl HealthRegistry {
     /// Record a rate-limited response.
     pub fn record_rate_limited(&self, target: &str, retry_after: Option<Duration>) {
         let mut targets = self.targets.write();
-        let health = targets.entry(target.to_string()).or_insert_with(|| TargetHealth {
-            status: HealthStatus::Healthy,
-            failure_count: 0,
-            last_failure: None,
-            last_success: None,
-            cooldown_until: None,
-            latency_ms: 0.0,
-        });
+        let health = targets
+            .entry(target.to_string())
+            .or_insert_with(|| TargetHealth {
+                status: HealthStatus::Healthy,
+                failure_count: 0,
+                last_failure: None,
+                last_success: None,
+                cooldown_until: None,
+                latency_ms: 0.0,
+            });
 
         health.status = HealthStatus::RateLimited;
         health.last_failure = Some(Instant::now());
@@ -281,7 +290,10 @@ mod tests {
         // 3rd failure - should enter cooldown
         registry.record_failure("test");
         let status = registry.get("test");
-        assert!(matches!(status, HealthStatus::Cooldown | HealthStatus::Unhealthy));
+        assert!(matches!(
+            status,
+            HealthStatus::Cooldown | HealthStatus::Unhealthy
+        ));
     }
 
     #[test]

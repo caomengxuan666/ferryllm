@@ -31,10 +31,10 @@
 
 pub mod adapter;
 pub mod adapters;
+pub mod circuit;
 pub mod config;
 pub mod entry;
 pub mod health;
-pub mod circuit;
 pub mod ir;
 pub mod router;
 pub mod token_observability;
@@ -43,5 +43,5 @@ pub mod token_observability;
 pub mod server;
 
 // Re-export gateway types for convenience
-pub use health::{HealthRegistry, HealthStatus, TargetHealth, HealthConfig};
-pub use circuit::{CircuitBreaker, CircuitState, BreakerConfig, CircuitMetrics};
+pub use circuit::{BreakerConfig, CircuitBreaker, CircuitMetrics, CircuitState};
+pub use health::{HealthConfig, HealthRegistry, HealthStatus, TargetHealth};
