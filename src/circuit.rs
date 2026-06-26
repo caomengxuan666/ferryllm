@@ -4,7 +4,6 @@
 //! handling backend failures gracefully.
 
 use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;

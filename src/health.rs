@@ -4,7 +4,6 @@
 //! backend targets, supporting circuit breaker patterns.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use parking_lot::RwLock;
@@ -114,7 +113,7 @@ impl HealthRegistry {
         targets
             .get(target)
             .cloned()
-            .unwrap_or_else(|| TargetHealth {
+            .unwrap_or(TargetHealth {
                 status: HealthStatus::Healthy,
                 failure_count: 0,
                 last_failure: None,
@@ -179,7 +178,7 @@ impl HealthRegistry {
             // Enter cooldown with exponential backoff
             let multiplier = (health.failure_count / self.config.failure_threshold)
                 .min(self.config.max_cooldown_multiplier);
-            let cooldown = self.config.base_cooldown * multiplier as u32;
+            let cooldown = self.config.base_cooldown * multiplier;
             health.cooldown_until = Some(Instant::now() + cooldown);
             health.status = HealthStatus::Cooldown;
         }
